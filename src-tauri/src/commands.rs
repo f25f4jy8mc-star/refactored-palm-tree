@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::ingest;
 use crate::model::extract::RealExtractor;
 use crate::model::projections::{self, ListOptions, ListPage};
 use crate::model::scan;
@@ -145,7 +146,7 @@ pub fn scan_folder(app: AppHandle, db: State<Db>, path: String) -> Result<ScanRe
     std::fs::create_dir_all(&proxies_dir).map_err(|e| e.to_string())?;
     let extractor = RealExtractor {
         proxies_dir,
-        proxy_version: 1,
+        proxy_version: ingest::PROXY_VERSION,
     };
 
     let report = {

@@ -7,7 +7,7 @@ import { useArchivaChanged } from "../../lib/events";
 import * as Sel from "../../lib/selection";
 import type { GroupBy, Hit, ListRow, Row, SortBy } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
-import { IconGlyph } from "./IconGlyph";
+import { Thumbnail } from "./Thumbnail";
 
 const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "type", label: "Type" },
@@ -482,7 +482,7 @@ export function LibraryView({ mode, isActive }: Props) {
                   >
                     <span className="indent" style={{ width: 16 }} />
                     <span className="icon">
-                      <IconGlyph kind={hit.node.icon_kind} />
+                      <Thumbnail item={hit.node} />
                     </span>
                     <span className="names">
                       <span className="row-name">{hit.node.display_name}</span>
@@ -548,7 +548,7 @@ export function LibraryView({ mode, isActive }: Props) {
                     <span className="indent" style={{ width: 16 }} />
                   ))}
                 <span className="icon">
-                  <IconGlyph kind={row.icon_kind} />
+                  <Thumbnail item={row} />
                 </span>
                 <span className="names">
                   <span className="row-name">{row.display_name}</span>
