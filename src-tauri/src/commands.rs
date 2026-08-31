@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::model::extract::RealExtractor;
 use crate::model::projections::{self, ListOptions, ListPage};
 use crate::model::scan;
+use crate::model::search::{self, Hit};
 
 pub struct Db(pub Mutex<Connection>);
 
@@ -91,6 +92,29 @@ impl From<scan::ScanReport> for ScanReportDto {
             went_missing: r.went_missing,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchArgs {
+    pub query: String,
+    #[serde(default)]
+    pub type_filter: Option<String>,
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+fn default_search_limit() -> usize {
+    50
+}
+
+#[tauri::command]
+pub fn search_library(db: State<Db>, args: SearchArgs) -> Result<Vec<Hit>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let opts = search::Options {
+        type_filter: args.type_filter,
+        limit: args.limit,
+    };
+    search::search(&conn, &args.query, &opts).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

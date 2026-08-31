@@ -225,6 +225,7 @@ fn apply(
             if stale {
                 write_facts(conn, node_id, path, ct, seen_at, extractor)?;
                 write_attributes(conn, node_id, path, ct, extractor)?;
+                sync_note_body(conn, node_id, path, ct)?;
             } else {
                 conn.execute(
                     "UPDATE node SET last_seen_at = ?2, availability = 'present' WHERE id = ?1",
@@ -238,6 +239,7 @@ fn apply(
         Action::Update { node_id } => {
             write_facts(conn, node_id, path, ct, seen_at, extractor)?;
             write_attributes(conn, node_id, path, ct, extractor)?;
+            sync_note_body(conn, node_id, path, ct)?;
             Ok(Some(node_id.clone()))
         }
 
@@ -268,6 +270,7 @@ fn apply(
                     "INSERT OR IGNORE INTO note(node_id, storage, body) VALUES (?1, 'file', '')",
                     params![id],
                 )?;
+                sync_note_body(conn, &id, path, ct)?;
                 if matches!(id_source, IdSource::MintAndRewrite) {
                     // Writing the id into the file is what makes rules 3–5
                     // possible on the next pass. Failing to write it is not
@@ -353,6 +356,37 @@ fn subtitle(ct: &str, size: i64) -> String {
     } else {
         format!("{kind} · {} KB", (size as f64 / 1024.0).round() as i64)
     }
+}
+
+/// The plain text `p_search` reads for a file-backed note (§9.1's FTS5 index,
+/// kept in sync by `trg_search_body`). The file on disk stays the one
+/// canonical copy — `note.body` here exists only so search has something to
+/// match against, per the model doc's reservation of that column for inline
+/// notes; a file-backed note's real content is still read live everywhere
+/// else (word/heading counts, the future note editor).
+fn note_body_text(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(match text.strip_prefix("---\n") {
+        Some(rest) => match rest.find("\n---") {
+            Some(end) => rest[end + 4..].trim_start_matches('\n').to_string(),
+            None => text,
+        },
+        None => text,
+    })
+}
+
+fn sync_note_body(conn: &Connection, id: &str, path: &Path, ct: &str) -> Result<()> {
+    if content_type::node_type(ct) != "note" {
+        return Ok(());
+    }
+    let Some(body) = note_body_text(path) else {
+        return Ok(());
+    };
+    conn.execute(
+        "UPDATE note SET body = ?2 WHERE node_id = ?1",
+        params![id, body],
+    )?;
+    Ok(())
 }
 
 fn write_attributes(
@@ -531,5 +565,61 @@ mod tests {
     fn display_name_drops_the_extension() {
         assert_eq!(display_name(Path::new("/x/Bergamo arcade.jpg")), "Bergamo arcade");
         assert_eq!(display_name(Path::new("/x/notes.md")), "notes");
+    }
+
+    #[test]
+    fn frontmatter_is_stripped_from_the_indexed_note_body() {
+        let dir = std::env::temp_dir().join(format!("archiva-note-body-{}", uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trip.md");
+        std::fs::write(&path, "---\narchiva-id: x\ntitle: Trip\n---\n\nWent to Bergamo.\n").unwrap();
+
+        assert_eq!(note_body_text(&path).as_deref(), Some("Went to Bergamo.\n"));
+
+        let plain = dir.join("plain.md");
+        std::fs::write(&plain, "No frontmatter here.\n").unwrap();
+        assert_eq!(note_body_text(&plain).as_deref(), Some("No frontmatter here.\n"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// End to end: a scanned note's body lands in the FTS index untouched by
+    /// the frontmatter fence, so search has something to match a word in the
+    /// body against — not just the display name.
+    #[test]
+    fn a_scanned_note_is_searchable_by_body_text() {
+        let dir = std::env::temp_dir().join(format!("archiva-scan-body-{}", uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trip.md");
+        std::fs::write(&path, "---\narchiva-id: x\n---\n\nWent to Bergamo in spring.\n").unwrap();
+        // Otherwise the freshly-written file falls inside the quiet window
+        // and rule 1 (still being written) defers it — nothing gets indexed.
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() - std::time::Duration::from_secs(10))
+            .unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(include_str!("../../migrations_model/001_model.sql"))
+            .unwrap();
+
+        scan(&mut conn, &[dir.clone()], &[], &NoExtraction).unwrap();
+
+        let body: String = conn
+            .query_row("SELECT body FROM note", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(body, "Went to Bergamo in spring.\n");
+
+        let hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM search WHERE search MATCH 'body:bergamo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 1, "the trigger-synced FTS row must match the note's body text");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

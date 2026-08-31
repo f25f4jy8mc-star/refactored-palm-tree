@@ -288,6 +288,16 @@ body {
   text-overflow: ellipsis;
 }
 
+.row-sub mark {
+  background: none;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.row.selected .row-sub mark {
+  color: #fff;
+}
+
 .row-sub {
   font-family: "IBM Plex Mono", monospace;
   font-size: 10.5px;

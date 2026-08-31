@@ -321,7 +321,12 @@ fn clone_link(l: &Link) -> Link {
     }
 }
 
-fn row(conn: &Connection, id: &str) -> Result<Row> {
+/// `pub(crate)` rather than private: every new projection needs the same
+/// item shape and the same capability resolution behind it, and duplicating
+/// this function per projection is exactly the kind of per-view copy the
+/// model exists to prevent. `Row` was already `pub`; this just lets sibling
+/// modules build one instead of re-deriving it from raw columns themselves.
+pub(crate) fn row(conn: &Connection, id: &str) -> Result<Row> {
     let (
         node_type,
         content_type,

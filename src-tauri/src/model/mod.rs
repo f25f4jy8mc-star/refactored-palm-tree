@@ -24,4 +24,5 @@ pub mod mutations;
 pub mod projections;
 pub mod reconcile;
 pub mod scan;
+pub mod search;
 pub mod signals;

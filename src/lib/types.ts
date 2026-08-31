@@ -56,6 +56,30 @@ export interface ListOptions {
   query: string | null;
 }
 
+/** `p_detail`'s node shape — also what a search `Hit` carries (§3, `Row`). */
+export interface Row {
+  id: string;
+  node_type: NodeType;
+  content_type: string;
+  display_name: string;
+  display_subtitle: string;
+  icon_kind: string;
+  availability: Availability;
+  proxy_state: ProxyState;
+  thumb_ref: string | null;
+  capabilities: string[];
+}
+
+export type MatchKind = "name" | "body" | "via_tag";
+
+/** One `p_search` result. Sectioned by `match_kind` server-side already —
+ * a name hit always precedes a body hit in the array the backend returns. */
+export interface Hit {
+  node: Row;
+  match_kind: MatchKind;
+  snippet: string;
+}
+
 export interface ScanReport {
   seen: number;
   created: number;

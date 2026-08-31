@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { ListOptions, ListPage, ScanReport } from "./types";
+import type { Hit, ListOptions, ListPage, ScanReport } from "./types";
 
 export function listRows(opts: ListOptions): Promise<ListPage> {
   return invoke("list_rows", {
@@ -13,6 +13,12 @@ export function listRows(opts: ListOptions): Promise<ListPage> {
       expanded: opts.expanded,
       query: opts.query,
     },
+  });
+}
+
+export function searchLibrary(query: string, typeFilter?: string | null): Promise<Hit[]> {
+  return invoke("search_library", {
+    args: { query, typeFilter: typeFilter ?? null, limit: 50 },
   });
 }
 

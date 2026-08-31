@@ -12,7 +12,9 @@
 // already-resolved list: which single capability wins a double-click, and
 // what a button is called. Both are presentation, not resolution.
 
-import type { ListRow } from "./types";
+/** What both `ListRow` and a search `Hit`'s `Row` carry — everything below
+ * needs nothing else, so it takes this instead of committing to one shape. */
+type HasCapabilities = { capabilities: string[] };
 
 export type Capability =
   | "preview"
@@ -37,7 +39,7 @@ export type Capability =
   | "promote"
   | "set_facet";
 
-export function can(row: ListRow, capability: Capability): boolean {
+export function can(row: HasCapabilities, capability: Capability): boolean {
   return row.capabilities.includes(capability);
 }
 
@@ -66,7 +68,7 @@ const OPEN_PRIORITY: OpenTarget[] = [
   "preview",
 ];
 
-export function openTarget(row: ListRow): OpenTarget | null {
+export function openTarget(row: HasCapabilities): OpenTarget | null {
   for (const target of OPEN_PRIORITY) {
     if (can(row, target)) return target;
   }
