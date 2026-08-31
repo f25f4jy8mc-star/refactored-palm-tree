@@ -1,33 +1,37 @@
+import type { PanelKind } from "./Dock";
+
 // The view switcher. One button per top-level destination — never one per
 // projection. Miller columns, the grid layout, the board canvas and the note
 // editor are all ways of looking at whatever is open, so they live inside
 // "Viewer" rather than getting a rail button each; a folder's own layout
-// toggle (column/grid/list) decides which of those the Viewer draws.
+// toggle (list/grid, in the taskbar) decides which of those the Viewer draws.
+//
+// Library and Scattered are the same underlying view over the same
+// projection (p_rows) with a different default grouping — see
+// components/library/LibraryView — so both open the same component.
 
-export type Destination = {
-  kind: string;
+type Destination = {
+  kind: PanelKind | null;
   label: string;
   glyph: string;
-  enabled: boolean;
 };
 
-export const DESTINATIONS: Destination[] = [
-  { kind: "library", label: "Library", glyph: "▤", enabled: true },
-  { kind: "scattered", label: "Scattered", glyph: "⁂", enabled: false },
-  { kind: "viewer", label: "Viewer", glyph: "◉", enabled: false },
-  { kind: "graph", label: "Graph", glyph: "❋", enabled: false },
-  { kind: "discover", label: "Discover", glyph: "✦", enabled: false },
-  { kind: "inspector", label: "Inspector", glyph: "◫", enabled: false },
-  { kind: "compass", label: "Compass", glyph: "✛", enabled: false },
+const DESTINATIONS: Destination[] = [
+  { kind: "library", label: "Library", glyph: "▤" },
+  { kind: "scattered", label: "Scattered", glyph: "⁂" },
+  { kind: null, label: "Viewer", glyph: "◉" },
+  { kind: null, label: "Graph", glyph: "❋" },
+  { kind: null, label: "Discover", glyph: "✦" },
+  { kind: null, label: "Inspector", glyph: "◫" },
+  { kind: null, label: "Compass", glyph: "✛" },
 ];
 
 type Props = {
-  active: string;
-  onSelect: (kind: string) => void;
-  onAddFolder: () => void;
+  activeKind: PanelKind | null;
+  onOpen: (kind: PanelKind, title: string) => void;
 };
 
-export function Rail({ active, onSelect, onAddFolder }: Props) {
+export function Rail({ activeKind, onOpen }: Props) {
   return (
     <nav className="rail" aria-label="Views">
       <span className="rail-mark" title="Archiva">
@@ -35,19 +39,15 @@ export function Rail({ active, onSelect, onAddFolder }: Props) {
       </span>
       {DESTINATIONS.map((d) => (
         <button
-          key={d.kind}
-          className={"rail-btn" + (d.kind === active ? " on" : "")}
-          title={d.enabled ? d.label : `${d.label} — not built yet`}
-          disabled={!d.enabled}
-          onClick={() => onSelect(d.kind)}
+          key={d.label}
+          className={"rail-btn" + (d.kind === activeKind ? " on" : "")}
+          title={d.kind ? d.label : `${d.label} — not built yet`}
+          disabled={!d.kind}
+          onClick={() => d.kind && onOpen(d.kind, d.label)}
         >
           {d.glyph}
         </button>
       ))}
-      <div className="rail-spacer" />
-      <button className="rail-btn" title="Add a folder to the library" onClick={onAddFolder}>
-        +
-      </button>
     </nav>
   );
 }

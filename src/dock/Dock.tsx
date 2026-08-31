@@ -6,7 +6,7 @@
 // `PanelKind`, teach `renderPanel` to draw it, and call `open()` — nothing
 // about the docking plumbing changes.
 
-import { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   DockviewApi,
   DockviewReact,
@@ -17,7 +17,7 @@ import {
 } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 
-export type PanelKind = "library";
+export type PanelKind = "library" | "scattered";
 
 export type PanelParams = { kind: PanelKind };
 
@@ -26,11 +26,7 @@ export type DockHandle = {
   open: (kind: PanelKind, title: string) => void;
 };
 
-type Props = {
-  renderPanel: (kind: PanelKind) => React.ReactNode;
-  onActivePanelChange: (title: string | null) => void;
-  onReady: (handle: DockHandle) => void;
-};
+type RenderPanel = (kind: PanelKind, isActive: boolean) => React.ReactNode;
 
 /**
  * Dockview renders each panel once, into a portal it holds in its own state.
@@ -39,16 +35,30 @@ type Props = {
  * context consumer re-renders on its own even when the tree above it bails
  * out. `renderPanel` is handed down this way for exactly that reason.
  */
-const RenderContext = createContext<(kind: PanelKind) => React.ReactNode>(() => null);
+const RenderContext = createContext<RenderPanel>(() => null);
 
-export default function Dock({ renderPanel, onActivePanelChange, onReady }: Props) {
+export default function Dock({ renderPanel, onActivePanelChange, onReady }: {
+  renderPanel: RenderPanel;
+  onActivePanelChange: (title: string | null, kind: PanelKind | null) => void;
+  onReady: (handle: DockHandle) => void;
+}) {
   const apiRef = useRef<DockviewApi | null>(null);
 
   const components = useMemo(
     () => ({
       panel: (props: IDockviewPanelProps<PanelParams>) => {
         const render = useContext(RenderContext);
-        return <div className="dock-panel">{render(props.params.kind)}</div>;
+        // Only the taskbar cares about this (a panel portals its controls
+        // into the shared slot only while active), so it isn't threaded
+        // through onActivePanelChange, which is a title string for the
+        // window chrome.
+        const [active, setActive] = useState(props.api.isActive);
+        useEffect(() => {
+          setActive(props.api.isActive);
+          const d = props.api.onDidActiveChange((e) => setActive(e.isActive));
+          return () => d.dispose();
+        }, [props.api]);
+        return <div className="dock-panel">{render(props.params.kind, active)}</div>;
       },
     }),
     [],
@@ -74,7 +84,9 @@ export default function Dock({ renderPanel, onActivePanelChange, onReady }: Prop
   const handleReady = useCallback(
     (event: DockviewReadyEvent) => {
       apiRef.current = event.api;
-      event.api.onDidActivePanelChange((e) => onActivePanelChange(e.panel?.title ?? null));
+      event.api.onDidActivePanelChange((e) =>
+        onActivePanelChange(e.panel?.title ?? null, (e.panel?.params as PanelParams | undefined)?.kind ?? null),
+      );
 
       const open: DockHandle["open"] = (kind, title) => {
         const existing = event.api.getPanel(kind);

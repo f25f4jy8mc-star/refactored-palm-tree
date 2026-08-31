@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { Hit, ListOptions, ListPage, ScanReport } from "./types";
+import type { Hit, ListOptions, ListPage, ScanReport, ViewPrefs } from "./types";
 
 export function listRows(opts: ListOptions): Promise<ListPage> {
   return invoke("list_rows", {
@@ -24,6 +24,14 @@ export function searchLibrary(query: string, typeFilter?: string | null): Promis
 
 export function scanFolder(path: string): Promise<ScanReport> {
   return invoke("scan_folder", { path });
+}
+
+export function getViewPrefs(scopeId: string, paneKind: string): Promise<ViewPrefs> {
+  return invoke("get_view_prefs", { scopeId, paneKind });
+}
+
+export function setViewPrefs(scopeId: string, paneKind: string, prefs: ViewPrefs): Promise<void> {
+  return invoke("set_view_prefs", { scopeId, paneKind, prefs });
 }
 
 /** Native folder picker. Returns null when the user cancels. */

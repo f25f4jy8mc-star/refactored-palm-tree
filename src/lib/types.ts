@@ -80,6 +80,14 @@ export interface Hit {
   snippet: string;
 }
 
+/** One row of `view_prefs` (§1.9, G13) — a scope's remembered layout. */
+export interface ViewPrefs {
+  layout: string | null;
+  sort: string | null;
+  group_by: string | null;
+  density: string | null;
+}
+
 export interface ScanReport {
   seen: number;
   created: number;

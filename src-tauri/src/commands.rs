@@ -10,12 +10,13 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::model::extract::RealExtractor;
 use crate::model::projections::{self, ListOptions, ListPage};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
+use crate::model::view_prefs::{self, ViewPrefs};
 
 pub struct Db(pub Mutex<Connection>);
 
@@ -118,6 +119,23 @@ pub fn search_library(db: State<Db>, args: SearchArgs) -> Result<Vec<Hit>, Strin
 }
 
 #[tauri::command]
+pub fn get_view_prefs(db: State<Db>, scope_id: String, pane_kind: String) -> Result<ViewPrefs, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    view_prefs::get(&conn, &scope_id, &pane_kind).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_view_prefs(
+    db: State<Db>,
+    scope_id: String,
+    pane_kind: String,
+    prefs: ViewPrefs,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    view_prefs::set(&conn, &scope_id, &pane_kind, &prefs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn scan_folder(app: AppHandle, db: State<Db>, path: String) -> Result<ScanReportDto, String> {
     let proxies_dir = app
         .path()
@@ -130,9 +148,13 @@ pub fn scan_folder(app: AppHandle, db: State<Db>, path: String) -> Result<ScanRe
         proxy_version: 1,
     };
 
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
-    let root = PathBuf::from(path);
-    scan::scan(&mut conn, &[root], &[], &extractor)
-        .map(ScanReportDto::from)
-        .map_err(|e| e.to_string())
+    let report = {
+        let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+        let root = PathBuf::from(path);
+        scan::scan(&mut conn, &[root], &[], &extractor).map_err(|e| e.to_string())?
+    };
+    // One writer, one event — every open pane refetches independently rather
+    // than the scanner knowing who currently has a stake in its result.
+    let _ = app.emit("archiva:changed", ());
+    Ok(ScanReportDto::from(report))
 }

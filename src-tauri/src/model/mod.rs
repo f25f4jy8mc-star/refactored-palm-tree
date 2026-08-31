@@ -26,3 +26,4 @@ pub mod reconcile;
 pub mod scan;
 pub mod search;
 pub mod signals;
+pub mod view_prefs;

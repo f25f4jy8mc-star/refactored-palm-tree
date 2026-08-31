@@ -1,21 +1,16 @@
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { listRows, pickFolder, scanFolder, searchLibrary } from "../../lib/api";
+import { getViewPrefs, listRows, pickFolder, scanFolder, searchLibrary, setViewPrefs } from "../../lib/api";
 import { openTarget } from "../../lib/capabilities";
+import { useArchivaChanged } from "../../lib/events";
+import * as Sel from "../../lib/selection";
 import type { GroupBy, Hit, ListRow, Row, SortBy } from "../../lib/types";
+import { useTaskbarSlot } from "../../dock/TaskBar";
 import { IconGlyph } from "./IconGlyph";
 
 const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "type", label: "Type" },
-  { value: "health", label: "Tagging health" },
   { value: "month", label: "Month added" },
   { value: "none", label: "No grouping" },
 ];
@@ -28,11 +23,28 @@ const SORT_OPTIONS: { value: SortBy; label: string }[] = [
   { value: "health", label: "Tagging health" },
 ];
 
+/** Client-side only — `icon_kind` is already conformance-derived server-side
+ * (`content_type::icon_kind`), so filtering by it is filtering by the same
+ * classification every other view uses, not a second copy of the DAG. */
+const KIND_OPTIONS: { value: string | null; label: string }[] = [
+  { value: null, label: "All types" },
+  { value: "image", label: "Images" },
+  { value: "video", label: "Video" },
+  { value: "audio", label: "Audio" },
+  { value: "document", label: "Documents" },
+  { value: "model", label: "3D" },
+  { value: "note", label: "Notes" },
+  { value: "folder", label: "Folders" },
+  { value: "board", label: "Boards" },
+];
+
 const MATCH_SECTION: Record<Hit["match_kind"], string> = {
   name: "Name matches",
   body: "Content matches",
   via_tag: "Tag matches",
 };
+
+const HEALTH_LABEL = ["Not described", "Barely described", "Hard to search by name", "Well described"];
 
 function formatSize(bytes: number | null): string {
   if (!bytes) return "";
@@ -40,13 +52,8 @@ function formatSize(bytes: number | null): string {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
-/** Strips the `‹…›` markers the backend wraps the matched term in and
- * renders them as emphasis instead, so the match is visible without the
- * raw delimiter characters leaking into the UI. */
 function Snippet({ text }: { text: string }) {
   const parts = text.split(/[‹›]/);
-  // Odd indices are always the marked span — snippet() alternates plain,
-  // marked, plain, marked, ...
   return (
     <>
       {parts.map((part, i) =>
@@ -56,28 +63,64 @@ function Snippet({ text }: { text: string }) {
   );
 }
 
-export type LibraryViewHandle = {
-  addFolder: () => Promise<void>;
+type Layout = "list" | "grid";
+
+type Props = {
+  /** Library and Scattered are the same view over the same projection
+   * (p_rows), differing only in default grouping and which controls show —
+   * not two components with two copies of the same list logic. */
+  mode: "library" | "scattered";
+  isActive: boolean;
 };
 
-export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
+export function LibraryView({ mode, isActive }: Props) {
+  const prefsScope = mode; // a view_prefs key, unrelated to p_rows' collector `scope`
+
   const [rows, setRows] = useState<ListRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
 
-  const [groupBy, setGroupBy] = useState<GroupBy>("type");
+  const [groupBy, setGroupBy] = useState<GroupBy>(mode === "scattered" ? "health" : "type");
   const [sort, setSort] = useState<SortBy>("name");
   const [descending, setDescending] = useState(false);
+  const [layout, setLayout] = useState<Layout>(mode === "scattered" ? "grid" : "list");
+  const [kindFilter, setKindFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [expanded, setExpanded] = useState<string[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Sel.SelectionState>(Sel.EMPTY_SELECTION);
 
   const listRef = useRef<HTMLDivElement>(null);
+  const typeAheadRef = useRef<{ buffer: string; at: number }>({ buffer: "", at: 0 });
   const trimmedQuery = query.trim();
   const searching = trimmedQuery.length > 0;
+  const slot = useTaskbarSlot();
+
+  // Per-scope view memory (§1.9, G13) — loaded once per mode, before the
+  // first fetch, so the first render already reflects last time.
+  useEffect(() => {
+    setPrefsLoaded(false);
+    getViewPrefs(prefsScope, "browse")
+      .then((p) => {
+        if (p.layout === "list" || p.layout === "grid") setLayout(p.layout);
+        if (p.sort) setSort(p.sort as SortBy);
+        if (mode === "library" && p.group_by) setGroupBy(p.group_by as GroupBy);
+      })
+      .finally(() => setPrefsLoaded(true));
+  }, [prefsScope, mode]);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    setViewPrefs(prefsScope, "browse", {
+      layout,
+      sort,
+      group_by: mode === "library" ? groupBy : null,
+      density: null,
+    });
+  }, [prefsLoaded, prefsScope, mode, layout, sort, groupBy]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -93,9 +136,6 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
       });
       setRows(page.rows);
       setTotal(page.total);
-      setSelectedId((prev) =>
-        prev && page.rows.some((r) => r.id === prev) ? prev : (page.rows[0]?.id ?? null),
-      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -104,11 +144,11 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
   }, [groupBy, sort, descending, expanded]);
 
   useEffect(() => {
-    if (!searching) refresh();
-  }, [refresh, searching]);
+    if (!searching && prefsLoaded) refresh();
+  }, [refresh, searching, prefsLoaded]);
 
-  // p_search is a real query, not a client-side filter, so it's debounced
-  // rather than fired on every keystroke.
+  useArchivaChanged(refresh);
+
   useEffect(() => {
     if (!searching) {
       setHits([]);
@@ -118,12 +158,7 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
     const timer = setTimeout(async () => {
       try {
         const results = await searchLibrary(trimmedQuery);
-        if (!cancelled) {
-          setHits(results);
-          setSelectedId((prev) =>
-            prev && results.some((h) => h.node.id === prev) ? prev : (results[0]?.node.id ?? null),
-          );
-        }
+        if (!cancelled) setHits(results);
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -134,25 +169,23 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
     };
   }, [searching, trimmedQuery]);
 
+  const visibleRows = useMemo(
+    () => (kindFilter ? rows.filter((r) => r.icon_kind === kindFilter || r.node_type === kindFilter) : rows),
+    [rows, kindFilter],
+  );
   const visibleIds = useMemo(
-    () => (searching ? hits.map((h) => h.node.id) : rows.map((r) => r.id)),
-    [searching, hits, rows],
+    () => (searching ? hits.map((h) => h.node.id) : visibleRows.map((r) => r.id)),
+    [searching, hits, visibleRows],
   );
-  const selectedIndex = useMemo(
-    () => visibleIds.indexOf(selectedId ?? ""),
-    [visibleIds, selectedId],
-  );
-
-  function moveSelection(delta: number) {
-    if (visibleIds.length === 0) return;
-    const next = Math.min(Math.max(selectedIndex + delta, 0), visibleIds.length - 1);
-    setSelectedId(visibleIds[next]);
-  }
+  const names = useMemo(() => {
+    const m = new Map<string, string>();
+    if (searching) hits.forEach((h) => m.set(h.node.id, h.node.display_name));
+    else visibleRows.forEach((r) => m.set(r.id, r.display_name));
+    return m;
+  }, [searching, hits, visibleRows]);
 
   function toggleExpanded(id: string) {
-    setExpanded((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
+    setExpanded((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   function announceOpen(node: Row | ListRow) {
@@ -172,35 +205,59 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
     announceOpen(row);
   }
 
+  function onRowClick(e: React.MouseEvent, id: string) {
+    if (e.shiftKey) setSelection((s) => Sel.rangeClick(s, id, visibleIds));
+    else if (e.metaKey || e.ctrlKey) setSelection((s) => Sel.toggleClick(s, id));
+    else setSelection(Sel.click(id));
+  }
+
   function onKeyDown(e: React.KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      setSelection(Sel.selectAll(visibleIds));
+      return;
+    }
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        moveSelection(1);
-        break;
+        setSelection((s) => Sel.moveCursor(s, visibleIds, 1, e.shiftKey));
+        return;
       case "ArrowUp":
         e.preventDefault();
-        moveSelection(-1);
-        break;
+        setSelection((s) => Sel.moveCursor(s, visibleIds, -1, e.shiftKey));
+        return;
       case "Home":
         e.preventDefault();
-        if (visibleIds.length) setSelectedId(visibleIds[0]);
-        break;
+        if (visibleIds.length) setSelection(Sel.click(visibleIds[0]));
+        return;
       case "End":
         e.preventDefault();
-        if (visibleIds.length) setSelectedId(visibleIds[visibleIds.length - 1]);
-        break;
+        if (visibleIds.length) setSelection(Sel.click(visibleIds[visibleIds.length - 1]));
+        return;
+      case "Escape":
+        setSelection(Sel.clear());
+        return;
       case "Enter": {
         e.preventDefault();
+        const id = selection.cursor;
         if (searching) {
-          const hit = hits.find((h) => h.node.id === selectedId);
+          const hit = hits.find((h) => h.node.id === id);
           if (hit) announceOpen(hit.node);
         } else {
-          const row = rows.find((r) => r.id === selectedId);
+          const row = rows.find((r) => r.id === id);
           if (row) openRow(row);
         }
-        break;
+        return;
       }
+    }
+    // Type-ahead: any single printable character with no modifier.
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const now = Date.now();
+      const buf = typeAheadRef.current;
+      buf.buffer = now - buf.at < 700 ? buf.buffer + e.key : e.key;
+      buf.at = now;
+      const match = Sel.typeAhead(visibleIds, names, buf.buffer, selection.cursor);
+      if (match) setSelection(Sel.click(match));
     }
   }
 
@@ -214,21 +271,35 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
         `Scanned ${dir}: ${report.created} added, ${report.updated} updated, ` +
           `${report.touched} unchanged.`,
       );
-      await refresh();
     } catch (e) {
       setStatus(null);
       setError(String(e));
     }
-  }, [refresh]);
-
-  useImperativeHandle(ref, () => ({ addFolder }), [addFolder]);
+  }, []);
 
   let lastGroup: string | null = null;
   let lastMatchKind: Hit["match_kind"] | null = null;
 
-  return (
-    <div className="body">
-      <div className="controls">
+  const controls = (
+    <>
+      <span className="taskbar-name">{mode === "library" ? "Library" : "Scattered"}</span>
+      <span className="taskbar-divider" />
+      <span className="taskbar-search">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+          <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+        <input type="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </span>
+      <span className="taskbar-divider" />
+      <select value={kindFilter ?? ""} onChange={(e) => setKindFilter(e.target.value || null)} disabled={searching}>
+        {KIND_OPTIONS.map((o) => (
+          <option key={o.label} value={o.value ?? ""}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {mode === "library" && (
         <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)} disabled={searching}>
           {GROUP_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -236,30 +307,81 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
             </option>
           ))}
         </select>
-        <select value={sort} onChange={(e) => setSort(e.target.value as SortBy)} disabled={searching}>
-          {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              Sort: {o.label}
-            </option>
+      )}
+      <select value={sort} onChange={(e) => setSort(e.target.value as SortBy)} disabled={searching}>
+        {SORT_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            Sort: {o.label}
+          </option>
+        ))}
+      </select>
+      <button className="btn" onClick={() => setDescending((d) => !d)} disabled={searching}>
+        {descending ? "↓" : "↑"}
+      </button>
+      <span className="taskbar-divider" />
+      <button
+        className={"btn" + (layout === "list" ? " on" : "")}
+        title="List"
+        onClick={() => setLayout("list")}
+      >
+        ☰
+      </button>
+      <button
+        className={"btn" + (layout === "grid" ? " on" : "")}
+        title="Grid"
+        onClick={() => setLayout("grid")}
+      >
+        ▦
+      </button>
+      {mode === "library" && (
+        <>
+          <span className="taskbar-divider" />
+          <button className="btn primary" onClick={addFolder}>
+            Add Folder…
+          </button>
+        </>
+      )}
+      {mode === "scattered" && (
+        <span className="health-key">
+          {HEALTH_LABEL.map((label, i) => (
+            <span key={label} className="health-item">
+              <i className={`health-dot health-${i}`} />
+              {label}
+            </span>
           ))}
-        </select>
-        <button className="btn" onClick={() => setDescending((d) => !d)} disabled={searching}>
-          {descending ? "↓ Descending" : "↑ Ascending"}
-        </button>
-        <div className="spacer" />
-        <span className="status-line" role="status">
-          {error ? (
-            <span className="error">{error}</span>
-          ) : searching ? (
-            `${hits.length} match${hits.length === 1 ? "" : "es"} for “${trimmedQuery}”`
-          ) : (
-            status ?? (loading ? "Loading…" : `${total} item${total === 1 ? "" : "s"}`)
-          )}
         </span>
+      )}
+      <span className="taskbar-spacer" />
+      {selection.ids.size > 0 && (
+        <>
+          <span className="sel-count">{selection.ids.size} selected</span>
+          <button className="btn quiet" onClick={() => setSelection(Sel.clear())}>
+            Clear
+          </button>
+        </>
+      )}
+    </>
+  );
+
+  return (
+    <div className="body">
+      <div className="status-line" role="status">
+        {error ? (
+          <span className="error">{error}</span>
+        ) : searching ? (
+          `${hits.length} match${hits.length === 1 ? "" : "es"} for “${trimmedQuery}”`
+        ) : (
+          status ?? (loading ? "Loading…" : `${visibleRows.length} of ${total} item${total === 1 ? "" : "s"}`)
+        )}
       </div>
 
       {searching ? (
-        <div className="library" ref={listRef} tabIndex={0} onKeyDown={onKeyDown}>
+        <div
+          className={`library ${layout}`}
+          ref={listRef}
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+        >
           {hits.length === 0 ? (
             <div className="empty">
               <div>No matches for “{trimmedQuery}”.</div>
@@ -272,8 +394,8 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
                 <div key={hit.node.id}>
                   {showHeader && <div className="group-head">{MATCH_SECTION[hit.match_kind]}</div>}
                   <div
-                    className={`row${hit.node.id === selectedId ? " selected" : ""}`}
-                    onClick={() => setSelectedId(hit.node.id)}
+                    className={`row${Sel.isSelected(selection, hit.node.id) ? " selected" : ""}`}
+                    onClick={(e) => onRowClick(e, hit.node.id)}
                     onDoubleClick={() => announceOpen(hit.node)}
                   >
                     <span className="indent" style={{ width: 16 }} />
@@ -307,51 +429,60 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
           </button>
         </div>
       ) : (
-        <div className="library" ref={listRef} tabIndex={0} onKeyDown={onKeyDown}>
-          {rows.map((row) => {
+        <div
+          className={`library ${layout}`}
+          ref={listRef}
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+        >
+          {visibleRows.map((row) => {
             const showHeader = row.group_key !== lastGroup && row.depth === 0;
             lastGroup = row.group_key;
+            const isSelected = Sel.isSelected(selection, row.id);
             return (
               <div key={row.id}>
-                {showHeader && row.group_label && (
+                {showHeader && row.group_label && layout === "list" && (
                   <div className="group-head">{row.group_label}</div>
                 )}
                 <div
-                  className={`row${row.id === selectedId ? " selected" : ""}`}
-                  style={{ paddingLeft: 20 + row.depth * 20 }}
-                  onClick={() => setSelectedId(row.id)}
+                  className={`row${isSelected ? " selected" : ""}`}
+                  style={layout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
+                  onClick={(e) => onRowClick(e, row.id)}
                   onDoubleClick={() => openRow(row)}
                 >
-                  {row.node_type === "collector" && row.child_count > 0 ? (
-                    <button
-                      className="disclosure"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleExpanded(row.id);
-                      }}
-                      aria-label={expanded.includes(row.id) ? "Collapse" : "Expand"}
-                    >
-                      {expanded.includes(row.id) ? "▾" : "▸"}
-                    </button>
-                  ) : (
-                    <span className="indent" style={{ width: 16 }} />
-                  )}
+                  {layout === "list" &&
+                    (row.node_type === "collector" && row.child_count > 0 ? (
+                      <button
+                        className="disclosure"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleExpanded(row.id);
+                        }}
+                        aria-label={expanded.includes(row.id) ? "Collapse" : "Expand"}
+                      >
+                        {expanded.includes(row.id) ? "▾" : "▸"}
+                      </button>
+                    ) : (
+                      <span className="indent" style={{ width: 16 }} />
+                    ))}
                   <span className="icon">
                     <IconGlyph kind={row.icon_kind} />
                   </span>
                   <span className="names">
                     <span className="row-name">{row.display_name}</span>
-                    <span className="row-sub">{row.display_subtitle}</span>
+                    {layout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
                   </span>
-                  {row.availability !== "present" && (
+                  {layout === "list" && row.availability !== "present" && (
                     <span className="badge missing">{row.availability.replace("_", " ")}</span>
                   )}
-                  {row.health_missing.length > 0 && (
+                  {layout === "list" && row.health_missing.length > 0 && (
                     <span className="badge" title={row.health_missing.join(", ")}>
                       {row.health_missing[0]}
                     </span>
                   )}
-                  {row.size_bytes ? <span className="row-sub">{formatSize(row.size_bytes)}</span> : null}
+                  {layout === "list" && row.size_bytes ? (
+                    <span className="row-sub">{formatSize(row.size_bytes)}</span>
+                  ) : null}
                 </div>
               </div>
             );
@@ -359,26 +490,7 @@ export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
         </div>
       )}
 
-      <div className="taskbar">
-        <div className="taskbar-row">
-          <span className="taskbar-name">Library</span>
-          <span className="taskbar-divider" />
-          <span className="taskbar-search">
-            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-              <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-            </svg>
-            <input
-              type="search"
-              placeholder="Search…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </span>
-        </div>
-      </div>
+      {isActive && slot && createPortal(controls, slot)}
     </div>
   );
-});
-
-LibraryView.displayName = "LibraryView";
+}

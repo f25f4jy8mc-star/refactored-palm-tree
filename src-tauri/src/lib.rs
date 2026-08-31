@@ -23,6 +23,8 @@ pub fn run() {
             commands::list_rows,
             commands::scan_folder,
             commands::search_library,
+            commands::get_view_prefs,
+            commands::set_view_prefs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

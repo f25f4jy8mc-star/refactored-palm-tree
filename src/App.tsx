@@ -3,33 +3,34 @@ import { useCallback, useRef, useState } from "react";
 import "./App.css";
 import Dock, { DockHandle, PanelKind } from "./dock/Dock";
 import { Rail } from "./dock/Rail";
-import { LibraryView, LibraryViewHandle } from "./components/library/LibraryView";
+import { TaskBar } from "./dock/TaskBar";
+import { LibraryView } from "./components/library/LibraryView";
 
 function App() {
   const dockRef = useRef<DockHandle | null>(null);
-  const libraryRef = useRef<LibraryViewHandle | null>(null);
-  const [activePanel, setActivePanel] = useState<string | null>(null);
+  const [activeKind, setActiveKind] = useState<PanelKind | null>("library");
 
-  const renderPanel = useCallback((kind: PanelKind) => {
+  const renderPanel = useCallback((kind: PanelKind, isActive: boolean) => {
     switch (kind) {
       case "library":
-        return <LibraryView ref={libraryRef} />;
+        return <LibraryView mode="library" isActive={isActive} />;
+      case "scattered":
+        return <LibraryView mode="scattered" isActive={isActive} />;
     }
   }, []);
 
   return (
     <div className="shell">
-      <Rail
-        active="library"
-        onSelect={(kind) => dockRef.current?.open(kind as PanelKind, "Library")}
-        onAddFolder={() => libraryRef.current?.addFolder()}
-      />
-      <div className="dock-area" aria-label={activePanel ?? undefined}>
-        <Dock
-          renderPanel={renderPanel}
-          onActivePanelChange={setActivePanel}
-          onReady={(handle) => (dockRef.current = handle)}
-        />
+      <Rail activeKind={activeKind} onOpen={(kind, title) => dockRef.current?.open(kind, title)} />
+      <div className="main">
+        <div className="dock-area">
+          <Dock
+            renderPanel={renderPanel}
+            onActivePanelChange={(_title, kind) => setActiveKind(kind)}
+            onReady={(handle) => (dockRef.current = handle)}
+          />
+        </div>
+        <TaskBar />
       </div>
     </div>
   );
