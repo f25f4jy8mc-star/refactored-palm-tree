@@ -65,19 +65,39 @@ export default function Dock({ renderPanel, onActivePanelChange, onReady }: {
   );
 
   const rightActions = useCallback(
-    (props: IDockviewHeaderActionsProps) => (
-      <div className="dock-actions">
-        <button
-          className="dock-action"
-          title="Maximise / restore"
-          onClick={() =>
-            props.api.isMaximized() ? props.api.exitMaximized() : props.api.maximize()
-          }
-        >
-          ⤢
-        </button>
-      </div>
-    ),
+    (props: IDockviewHeaderActionsProps) => {
+      const split = (direction: "right" | "below") => {
+        const active = props.activePanel;
+        const kind = (active?.params as PanelParams | undefined)?.kind ?? "library";
+        const title = active?.title ?? "Library";
+        props.containerApi.addPanel<PanelParams>({
+          id: `${kind}~${Date.now()}`,
+          component: "panel",
+          title,
+          params: { kind },
+          position: { referenceGroup: props.group, direction },
+        });
+      };
+      return (
+        <div className="dock-actions">
+          <button className="dock-action" title="Split right" onClick={() => split("right")}>
+            ⫲
+          </button>
+          <button className="dock-action" title="Split down" onClick={() => split("below")}>
+            ⫤
+          </button>
+          <button
+            className="dock-action"
+            title="Maximise / restore"
+            onClick={() =>
+              props.api.isMaximized() ? props.api.exitMaximized() : props.api.maximize()
+            }
+          >
+            ⤢
+          </button>
+        </div>
+      );
+    },
     [],
   );
 

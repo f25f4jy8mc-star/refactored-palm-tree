@@ -39,6 +39,7 @@ body {
 .main {
   flex: 1;
   min-width: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
 }
@@ -197,6 +198,7 @@ body {
   flex: 1;
   overflow-y: auto;
   outline: none;
+  padding-bottom: 64px; /* keeps rows from hiding behind the floating taskbar */
 }
 
 .library.grid {
@@ -389,7 +391,7 @@ body {
   color: var(--ink-2);
   font-size: 13px;
   text-align: center;
-  padding: 0 20px;
+  padding: 0 20px 64px; /* keeps the CTA clear of the floating taskbar */
 }
 
 .empty .hint {
@@ -399,15 +401,25 @@ body {
 }
 
 /* --------------------------------------------------------------- taskbar */
-/* Docked to the bottom of the content area (not under the rail), because
-   every view's filter/sort/layout controls portal in here rather than
-   living in a private toolbar inside the panel — one shared surface, so the
-   bar always shows exactly the focused view's own controls. */
+/* Floats over the content area (not the rail — it's positioned against
+   `.main`, which excludes the rail) rather than docking full-width, so it
+   reads as one shared overlay rather than a permanent fixture. Every view's
+   filter/sort/layout controls portal into it while that view is active. Row
+   scrolls horizontally rather than wrapping, so the bar's height never
+   jumps around as controls change per view. */
 
 .taskbar {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--line);
-  background: var(--wash);
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  width: min(920px, calc(100% - 32px));
+  max-width: calc(100% - 32px);
+  background: rgba(237, 237, 237, 0.94);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
   padding: 0 12px;
   overflow-x: auto;
 }
@@ -416,7 +428,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 38px;
+  height: 40px;
   min-width: max-content;
 }
 
