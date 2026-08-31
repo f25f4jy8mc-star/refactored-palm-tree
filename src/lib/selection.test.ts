@@ -87,6 +87,16 @@ describe("moveCursor", () => {
     expect(s.cursor).toBe("a");
   });
 
+  /** Grid mode's ↓/↑ pass the on-screen column count as the delta (jumping
+   * a full row), not always ±1 — the same function has to serve both. */
+  it("moves by an arbitrary delta, for grid mode's row-sized steps", () => {
+    const grid = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]; // 3 columns
+    const s = moveCursor(click("b"), grid, 3, false); // down one row from b
+    expect(s.cursor).toBe("e");
+    const clamped = moveCursor(click("h"), grid, 3, false); // off the end
+    expect(clamped.cursor).toBe("i");
+  });
+
   /** The bug this module exists to prevent: repeated shift+arrow must keep
    * growing the range from one fixed anchor, not restart from the cursor
    * each time. */

@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getViewPrefs, listRows, pickFolder, scanFolder, searchLibrary, setViewPrefs } from "../../lib/api";
 import { openTarget } from "../../lib/capabilities";
@@ -94,6 +94,7 @@ export function LibraryView({ mode, isActive }: Props) {
   const [selection, setSelection] = useState<Sel.SelectionState>(Sel.EMPTY_SELECTION);
 
   const listRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const typeAheadRef = useRef<{ buffer: string; at: number }>({ buffer: "", at: 0 });
   const trimmedQuery = query.trim();
   const searching = trimmedQuery.length > 0;
@@ -211,28 +212,69 @@ export function LibraryView({ mode, isActive }: Props) {
     else setSelection(Sel.click(id));
   }
 
+  /** How many tiles fit per row right now, read the same way build17 did:
+   * off the grid container's own resolved `grid-template-columns` rather
+   * than computing it from container/tile widths ourselves, so it can never
+   * drift from what's actually on screen as the window resizes. List mode
+   * is a single column, so ↑/↓ there is just ±1 and ←/→ is a no-op. */
+  function columns(): number {
+    if (layout !== "grid" || searching) return 1;
+    const el = listRef.current;
+    if (!el) return 1;
+    return Math.max(1, getComputedStyle(el).gridTemplateColumns.split(" ").length);
+  }
+
+  function landOn(id: string) {
+    rowRefs.current.get(id)?.scrollIntoView({ block: "nearest" });
+  }
+
   function onKeyDown(e: React.KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
       e.preventDefault();
       setSelection(Sel.selectAll(visibleIds));
       return;
     }
+    // ⌘1/⌘2 switch layout, matching Finder/build17's view-mode shortcuts.
+    if ((e.metaKey || e.ctrlKey) && (e.key === "1" || e.key === "2")) {
+      e.preventDefault();
+      setLayout(e.key === "1" ? "grid" : "list");
+      return;
+    }
+    const cols = columns();
     switch (e.key) {
       case "ArrowDown":
-        e.preventDefault();
-        setSelection((s) => Sel.moveCursor(s, visibleIds, 1, e.shiftKey));
-        return;
       case "ArrowUp":
+      case "ArrowLeft":
+      case "ArrowRight": {
+        // A list is one-dimensional: ←/→ do nothing there, same as build17.
+        if (cols === 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+          e.preventDefault();
+          return;
+        }
         e.preventDefault();
-        setSelection((s) => Sel.moveCursor(s, visibleIds, -1, e.shiftKey));
+        const step =
+          e.key === "ArrowDown" ? cols : e.key === "ArrowUp" ? -cols : e.key === "ArrowRight" ? 1 : -1;
+        setSelection((s) => {
+          const next = Sel.moveCursor(s, visibleIds, step, e.shiftKey);
+          if (next.cursor) landOn(next.cursor);
+          return next;
+        });
         return;
+      }
       case "Home":
         e.preventDefault();
-        if (visibleIds.length) setSelection(Sel.click(visibleIds[0]));
+        if (visibleIds.length) {
+          setSelection(Sel.click(visibleIds[0]));
+          landOn(visibleIds[0]);
+        }
         return;
       case "End":
         e.preventDefault();
-        if (visibleIds.length) setSelection(Sel.click(visibleIds[visibleIds.length - 1]));
+        if (visibleIds.length) {
+          const last = visibleIds[visibleIds.length - 1];
+          setSelection(Sel.click(last));
+          landOn(last);
+        }
         return;
       case "Escape":
         setSelection(Sel.clear());
@@ -257,7 +299,10 @@ export function LibraryView({ mode, isActive }: Props) {
       buf.buffer = now - buf.at < 700 ? buf.buffer + e.key : e.key;
       buf.at = now;
       const match = Sel.typeAhead(visibleIds, names, buf.buffer, selection.cursor);
-      if (match) setSelection(Sel.click(match));
+      if (match) {
+        setSelection(Sel.click(match));
+        landOn(match);
+      }
     }
   }
 
@@ -292,7 +337,14 @@ export function LibraryView({ mode, isActive }: Props) {
         <input type="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} />
       </span>
       <span className="taskbar-divider" />
-      <select value={kindFilter ?? ""} onChange={(e) => setKindFilter(e.target.value || null)} disabled={searching}>
+      <select
+        value={kindFilter ?? ""}
+        onChange={(e) => {
+          setKindFilter(e.target.value || null);
+          listRef.current?.focus();
+        }}
+        disabled={searching}
+      >
         {KIND_OPTIONS.map((o) => (
           <option key={o.label} value={o.value ?? ""}>
             {o.label}
@@ -300,7 +352,14 @@ export function LibraryView({ mode, isActive }: Props) {
         ))}
       </select>
       {mode === "library" && (
-        <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)} disabled={searching}>
+        <select
+          value={groupBy}
+          onChange={(e) => {
+            setGroupBy(e.target.value as GroupBy);
+            listRef.current?.focus();
+          }}
+          disabled={searching}
+        >
           {GROUP_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
               Group: {o.label}
@@ -308,20 +367,37 @@ export function LibraryView({ mode, isActive }: Props) {
           ))}
         </select>
       )}
-      <select value={sort} onChange={(e) => setSort(e.target.value as SortBy)} disabled={searching}>
+      <select
+        value={sort}
+        onChange={(e) => {
+          setSort(e.target.value as SortBy);
+          listRef.current?.focus();
+        }}
+        disabled={searching}
+      >
         {SORT_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>
             Sort: {o.label}
           </option>
         ))}
       </select>
-      <button className="btn" onClick={() => setDescending((d) => !d)} disabled={searching}>
+      {/* mousedown is prevented on every button below so clicking a taskbar
+          control never steals focus from the list — losing focus would
+          silently break arrow-key navigation until the user clicked back
+          into it, which is worse than any of these looking briefly inert. */}
+      <button
+        className="btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setDescending((d) => !d)}
+        disabled={searching}
+      >
         {descending ? "↓" : "↑"}
       </button>
       <span className="taskbar-divider" />
       <button
         className={"btn" + (layout === "list" ? " on" : "")}
         title="List"
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => setLayout("list")}
       >
         ☰
@@ -329,6 +405,7 @@ export function LibraryView({ mode, isActive }: Props) {
       <button
         className={"btn" + (layout === "grid" ? " on" : "")}
         title="Grid"
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => setLayout("grid")}
       >
         ▦
@@ -355,7 +432,11 @@ export function LibraryView({ mode, isActive }: Props) {
       {selection.ids.size > 0 && (
         <>
           <span className="sel-count">{selection.ids.size} selected</span>
-          <button className="btn quiet" onClick={() => setSelection(Sel.clear())}>
+          <button
+            className="btn quiet"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setSelection(Sel.clear())}
+          >
             Clear
           </button>
         </>
@@ -376,12 +457,9 @@ export function LibraryView({ mode, isActive }: Props) {
       </div>
 
       {searching ? (
-        <div
-          className={`library ${layout}`}
-          ref={listRef}
-          tabIndex={0}
-          onKeyDown={onKeyDown}
-        >
+        // Search results are always a list — a hit's snippet has nowhere
+        // sensible to go in a 100px tile, regardless of the browsing layout.
+        <div className="library list" ref={listRef} tabIndex={0} onKeyDown={onKeyDown}>
           {hits.length === 0 ? (
             <div className="empty">
               <div>No matches for “{trimmedQuery}”.</div>
@@ -394,6 +472,10 @@ export function LibraryView({ mode, isActive }: Props) {
                 <div key={hit.node.id}>
                   {showHeader && <div className="group-head">{MATCH_SECTION[hit.match_kind]}</div>}
                   <div
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(hit.node.id, el);
+                      else rowRefs.current.delete(hit.node.id);
+                    }}
                     className={`row${Sel.isSelected(selection, hit.node.id) ? " selected" : ""}`}
                     onClick={(e) => onRowClick(e, hit.node.id)}
                     onDoubleClick={() => announceOpen(hit.node)}
@@ -439,51 +521,60 @@ export function LibraryView({ mode, isActive }: Props) {
             const showHeader = row.group_key !== lastGroup && row.depth === 0;
             lastGroup = row.group_key;
             const isSelected = Sel.isSelected(selection, row.id);
+            const tile = (
+              <div
+                ref={(el) => {
+                  if (el) rowRefs.current.set(row.id, el);
+                  else rowRefs.current.delete(row.id);
+                }}
+                className={`row${isSelected ? " selected" : ""}`}
+                style={layout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
+                onClick={(e) => onRowClick(e, row.id)}
+                onDoubleClick={() => openRow(row)}
+              >
+                {layout === "list" &&
+                  (row.node_type === "collector" && row.child_count > 0 ? (
+                    <button
+                      className="disclosure"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleExpanded(row.id);
+                      }}
+                      aria-label={expanded.includes(row.id) ? "Collapse" : "Expand"}
+                    >
+                      {expanded.includes(row.id) ? "▾" : "▸"}
+                    </button>
+                  ) : (
+                    <span className="indent" style={{ width: 16 }} />
+                  ))}
+                <span className="icon">
+                  <IconGlyph kind={row.icon_kind} />
+                </span>
+                <span className="names">
+                  <span className="row-name">{row.display_name}</span>
+                  {layout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
+                </span>
+                {layout === "list" && row.availability !== "present" && (
+                  <span className="badge missing">{row.availability.replace("_", " ")}</span>
+                )}
+                {layout === "list" && row.health_missing.length > 0 && (
+                  <span className="badge" title={row.health_missing.join(", ")}>
+                    {row.health_missing[0]}
+                  </span>
+                )}
+                {layout === "list" && row.size_bytes ? (
+                  <span className="row-sub">{formatSize(row.size_bytes)}</span>
+                ) : null}
+              </div>
+            );
+            // Grid tiles must be the grid's own direct children — a
+            // wrapper div around each would become the grid item instead of
+            // the tile, breaking the very column count columns() measures.
+            if (layout === "grid") return cloneElement(tile, { key: row.id });
             return (
               <div key={row.id}>
-                {showHeader && row.group_label && layout === "list" && (
-                  <div className="group-head">{row.group_label}</div>
-                )}
-                <div
-                  className={`row${isSelected ? " selected" : ""}`}
-                  style={layout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
-                  onClick={(e) => onRowClick(e, row.id)}
-                  onDoubleClick={() => openRow(row)}
-                >
-                  {layout === "list" &&
-                    (row.node_type === "collector" && row.child_count > 0 ? (
-                      <button
-                        className="disclosure"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleExpanded(row.id);
-                        }}
-                        aria-label={expanded.includes(row.id) ? "Collapse" : "Expand"}
-                      >
-                        {expanded.includes(row.id) ? "▾" : "▸"}
-                      </button>
-                    ) : (
-                      <span className="indent" style={{ width: 16 }} />
-                    ))}
-                  <span className="icon">
-                    <IconGlyph kind={row.icon_kind} />
-                  </span>
-                  <span className="names">
-                    <span className="row-name">{row.display_name}</span>
-                    {layout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
-                  </span>
-                  {layout === "list" && row.availability !== "present" && (
-                    <span className="badge missing">{row.availability.replace("_", " ")}</span>
-                  )}
-                  {layout === "list" && row.health_missing.length > 0 && (
-                    <span className="badge" title={row.health_missing.join(", ")}>
-                      {row.health_missing[0]}
-                    </span>
-                  )}
-                  {layout === "list" && row.size_bytes ? (
-                    <span className="row-sub">{formatSize(row.size_bytes)}</span>
-                  ) : null}
-                </div>
+                {showHeader && row.group_label && <div className="group-head">{row.group_label}</div>}
+                {tile}
               </div>
             );
           })}
