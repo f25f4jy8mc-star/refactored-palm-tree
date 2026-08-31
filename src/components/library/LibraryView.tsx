@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { listRows, pickFolder, scanFolder } from "../../lib/api";
 import { openTarget } from "../../lib/capabilities";
@@ -26,7 +34,11 @@ function formatSize(bytes: number | null): string {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
-export function LibraryView() {
+export type LibraryViewHandle = {
+  addFolder: () => Promise<void>;
+};
+
+export const LibraryView = forwardRef<LibraryViewHandle>((_props, ref) => {
   const [rows, setRows] = useState<ListRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -95,7 +107,7 @@ export function LibraryView() {
     const target = openTarget(row);
     setStatus(
       target
-        ? `Would open “${row.display_name}” via ${target} — that pane isn't built yet.`
+        ? `Would open “${row.display_name}” via ${target} — the Viewer pane isn't built yet.`
         : `“${row.display_name}” has nothing to open it with.`,
     );
   }
@@ -127,7 +139,7 @@ export function LibraryView() {
     }
   }
 
-  async function onAddFolder() {
+  const addFolder = useCallback(async () => {
     const dir = await pickFolder();
     if (!dir) return;
     setStatus(`Scanning ${dir}…`);
@@ -142,19 +154,15 @@ export function LibraryView() {
       setStatus(null);
       setError(String(e));
     }
-  }
+  }, [refresh]);
+
+  useImperativeHandle(ref, () => ({ addFolder }), [addFolder]);
 
   let lastGroup: string | null = null;
 
   return (
     <div className="body">
-      <div className="toolbar">
-        <input
-          type="search"
-          placeholder="Search…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+      <div className="controls">
         <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
           {GROUP_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -173,13 +181,13 @@ export function LibraryView() {
           {descending ? "↓ Descending" : "↑ Ascending"}
         </button>
         <div className="spacer" />
-        <button className="btn primary" onClick={onAddFolder}>
-          Add Folder…
-        </button>
-      </div>
-
-      <div className="status-line" role="status">
-        {error ? <span className="error">{error}</span> : status ?? (loading ? "Loading…" : `${total} item${total === 1 ? "" : "s"}`)}
+        <span className="status-line" role="status">
+          {error ? (
+            <span className="error">{error}</span>
+          ) : (
+            status ?? (loading ? "Loading…" : `${total} item${total === 1 ? "" : "s"}`)
+          )}
+        </span>
       </div>
 
       {!loading && total === 0 ? (
@@ -189,7 +197,7 @@ export function LibraryView() {
             Add a folder to index its photos, notes and documents. Nothing is copied — Archiva
             only reads what's there.
           </div>
-          <button className="btn primary" onClick={onAddFolder}>
+          <button className="btn primary" onClick={addFolder}>
             Add Folder…
           </button>
         </div>
@@ -245,6 +253,27 @@ export function LibraryView() {
           })}
         </div>
       )}
+
+      <div className="taskbar">
+        <div className="taskbar-row">
+          <span className="taskbar-name">Library</span>
+          <span className="taskbar-divider" />
+          <span className="taskbar-search">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+            <input
+              type="search"
+              placeholder="Search…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </span>
+        </div>
+      </div>
     </div>
   );
-}
+});
+
+LibraryView.displayName = "LibraryView";

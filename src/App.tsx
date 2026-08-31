@@ -1,39 +1,36 @@
-import "./App.css";
-import { LibraryView } from "./components/library/LibraryView";
+import { useCallback, useRef, useState } from "react";
 
-// Every future pane is a different projection over the same store (see the
-// architecture note). Only Library reads one today; the rest are named here
-// so the shell's shape doesn't change as they land — each just stops being
-// disabled.
-const VIEWS = [
-  "Library",
-  "Scattered",
-  "Miller",
-  "Grid",
-  "Board",
-  "Note",
-  "Inspector",
-  "Graph",
-  "Discover",
-  "Compass",
-] as const;
+import "./App.css";
+import Dock, { DockHandle, PanelKind } from "./dock/Dock";
+import { Rail } from "./dock/Rail";
+import { LibraryView, LibraryViewHandle } from "./components/library/LibraryView";
 
 function App() {
-  const active: (typeof VIEWS)[number] = "Library";
+  const dockRef = useRef<DockHandle | null>(null);
+  const libraryRef = useRef<LibraryViewHandle | null>(null);
+  const [activePanel, setActivePanel] = useState<string | null>(null);
+
+  const renderPanel = useCallback((kind: PanelKind) => {
+    switch (kind) {
+      case "library":
+        return <LibraryView ref={libraryRef} />;
+    }
+  }, []);
 
   return (
     <div className="shell">
-      <header className="top">
-        <span className="mark">Archiva</span>
-        <nav className="nav" aria-label="Views">
-          {VIEWS.map((v) => (
-            <button key={v} className={v === active ? "active" : ""} disabled={v !== active}>
-              {v}
-            </button>
-          ))}
-        </nav>
-      </header>
-      <LibraryView />
+      <Rail
+        active="library"
+        onSelect={(kind) => dockRef.current?.open(kind as PanelKind, "Library")}
+        onAddFolder={() => libraryRef.current?.addFolder()}
+      />
+      <div className="dock-area" aria-label={activePanel ?? undefined}>
+        <Dock
+          renderPanel={renderPanel}
+          onActivePanelChange={setActivePanel}
+          onReady={(handle) => (dockRef.current = handle)}
+        />
+      </div>
     </div>
   );
 }
