@@ -17,16 +17,28 @@ import {
 } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 
-export type PanelKind = "library" | "scattered" | "viewer";
+export type PanelKind = "library" | "scattered" | "viewer" | "inspector";
 
-export type PanelParams = { kind: PanelKind };
+/** `scopeId` is which collector a Viewer pane is showing — `undefined` is
+ * the library root. It rides on the panel so a split or a reopened layout
+ * keeps showing what it was showing. */
+export type PanelParams = { kind: PanelKind; scopeId?: string };
 
 export type DockHandle = {
-  /** Add a panel, or focus it if one of this kind is already open. */
-  open: (kind: PanelKind, title: string) => void;
+  /** Add a panel, or focus it if one of this kind is already open. A
+   * `scopeId` retargets an existing panel of that kind rather than piling
+   * up a second one — the old build's "retargetViewer", which is what
+   * stops every double-click opening another tab. */
+  open: (kind: PanelKind, title: string, scopeId?: string) => void;
+  /** Close the active panel. */
+  closeActive: () => void;
+  /** Split the active panel's group, right or below. */
+  split: (direction: "right" | "below") => void;
+  /** Move focus between panes. */
+  cycleGroup: (delta: number) => void;
 };
 
-type RenderPanel = (kind: PanelKind, isActive: boolean) => React.ReactNode;
+type RenderPanel = (params: PanelParams, isActive: boolean) => React.ReactNode;
 
 /**
  * Dockview renders each panel once, into a portal it holds in its own state.
@@ -53,12 +65,21 @@ export default function Dock({ renderPanel, onActivePanelChange, onReady }: {
         // through onActivePanelChange, which is a title string for the
         // window chrome.
         const [active, setActive] = useState(props.api.isActive);
+        // `params` is re-read on change too: retargeting a Viewer at a
+        // different collector updates the panel in place rather than
+        // replacing it, so the change has to reach the renderer.
+        const [params, setParams] = useState<PanelParams>(props.params);
         useEffect(() => {
           setActive(props.api.isActive);
-          const d = props.api.onDidActiveChange((e) => setActive(e.isActive));
-          return () => d.dispose();
-        }, [props.api]);
-        return <div className="dock-panel">{render(props.params.kind, active)}</div>;
+          setParams(props.params);
+          const a = props.api.onDidActiveChange((e) => setActive(e.isActive));
+          const p = props.api.onDidParametersChange((next) => setParams(next as PanelParams));
+          return () => {
+            a.dispose();
+            p.dispose();
+          };
+        }, [props.api, props.params]);
+        return <div className="dock-panel">{render(params, active)}</div>;
       },
     }),
     [],
@@ -108,9 +129,18 @@ export default function Dock({ renderPanel, onActivePanelChange, onReady }: {
         onActivePanelChange(e.panel?.title ?? null, (e.panel?.params as PanelParams | undefined)?.kind ?? null),
       );
 
-      const open: DockHandle["open"] = (kind, title) => {
-        const existing = event.api.getPanel(kind);
+      const open: DockHandle["open"] = (kind, title, scopeId) => {
+        // Prefer a panel of this kind that's already open — including one
+        // created by a split, whose id is suffixed. Retargeting it is what
+        // keeps double-clicking a folder from piling up tabs.
+        const existing =
+          event.api.getPanel(kind) ??
+          event.api.panels.find((p) => (p.params as PanelParams | undefined)?.kind === kind);
         if (existing) {
+          if (scopeId !== undefined) {
+            existing.api.updateParameters({ kind, scopeId });
+            existing.api.setTitle(title);
+          }
           existing.api.setActive();
           return;
         }
@@ -118,13 +148,38 @@ export default function Dock({ renderPanel, onActivePanelChange, onReady }: {
           id: kind,
           component: "panel",
           title,
-          params: { kind },
+          params: { kind, scopeId },
         });
       };
 
-      onReady({ open });
-      // Library is the one view that exists — open it by default so the
-      // shell is never staring at an empty grid.
+      const closeActive: DockHandle["closeActive"] = () => {
+        event.api.activePanel?.api.close();
+      };
+
+      const split: DockHandle["split"] = (direction) => {
+        const active = event.api.activePanel;
+        const group = active?.group ?? event.api.activeGroup;
+        if (!group) return;
+        const params = (active?.params as PanelParams | undefined) ?? { kind: "library" };
+        event.api.addPanel<PanelParams>({
+          id: `${params.kind}~${Date.now()}`,
+          component: "panel",
+          title: active?.title ?? "Library",
+          params,
+          position: { referenceGroup: group, direction },
+        });
+      };
+
+      const cycleGroup: DockHandle["cycleGroup"] = (delta) => {
+        const groups = event.api.groups;
+        if (groups.length < 2) return;
+        const i = groups.findIndex((g) => g.id === event.api.activeGroup?.id);
+        groups[(i + delta + groups.length) % groups.length].api.setActive();
+      };
+
+      onReady({ open, closeActive, split, cycleGroup });
+      // Library opens by default so the shell is never staring at an empty
+      // grid.
       open("library", "Library");
     },
     [onActivePanelChange, onReady],

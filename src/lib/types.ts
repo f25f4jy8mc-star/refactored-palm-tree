@@ -98,6 +98,56 @@ export interface TreeColumn {
   rows: Row[];
 }
 
+/** One watched folder (migration 002). `item_count` is derived from the
+ * nodes underneath it, never stored. */
+export interface Source {
+  id: string;
+  path: string;
+  enabled: boolean;
+  added_at: string;
+  last_scan_at: string | null;
+  item_count: number;
+}
+
+/** One entry of a compass slot in `p_detail` — carries the far node's row
+ * (G22), so drawing a compass is one call rather than one call per tile. */
+export interface Link {
+  edge_id: string;
+  kind: string;
+  compass: string;
+  reciprocal: string;
+  ordinal: number;
+  label: string | null;
+  status: string;
+  origin: string;
+  outward: boolean;
+  node: Row;
+}
+
+export interface LinkGroup {
+  node_type: string;
+  total: number;
+  links: Link[];
+}
+
+export interface Slot {
+  compass: string;
+  total: number;
+  groups: LinkGroup[];
+}
+
+/** `p_detail`, plus the two fields the preview needs that `Row` lacks. */
+export interface Detail {
+  node: Row;
+  attributes: Record<string, string>;
+  slots: Slot[];
+  suggestions: Link[];
+  unresolved_links: number;
+  locator: string | null;
+  previewRef: string | null;
+  sizeBytes: number | null;
+}
+
 export interface ScanReport {
   seen: number;
   created: number;

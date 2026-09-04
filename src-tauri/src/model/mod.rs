@@ -26,5 +26,6 @@ pub mod reconcile;
 pub mod scan;
 pub mod search;
 pub mod signals;
+pub mod sources;
 pub mod tree;
 pub mod view_prefs;

@@ -1,8 +1,9 @@
 import { createPortal } from "react-dom";
 import { cloneElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getViewPrefs, listRows, pickFolder, scanFolder, searchLibrary, setViewPrefs } from "../../lib/api";
+import { addSource, getViewPrefs, listRows, pickFolder, searchLibrary, setViewPrefs } from "../../lib/api";
 import { openTarget } from "../../lib/capabilities";
+import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
 import * as Sel from "../../lib/selection";
 import type { GroupBy, Hit, ListRow, Row, SortBy } from "../../lib/types";
@@ -71,9 +72,12 @@ type Props = {
    * not two components with two copies of the same list logic. */
   mode: "library" | "scattered";
   isActive: boolean;
+  /** Opening a collector hands it to the Viewer pane rather than this one
+   * growing a second way to browse a folder. */
+  onOpenCollector?: (id: string, title: string) => void;
 };
 
-export function LibraryView({ mode, isActive }: Props) {
+export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   const prefsScope = mode; // a view_prefs key, unrelated to p_rows' collector `scope`
 
   const [rows, setRows] = useState<ListRow[]>([]);
@@ -99,6 +103,7 @@ export function LibraryView({ mode, isActive }: Props) {
   const trimmedQuery = query.trim();
   const searching = trimmedQuery.length > 0;
   const slot = useTaskbarSlot();
+  const { setActive } = useActiveItem();
 
   // Per-scope view memory (§1.9, G13) — loaded once per mode, before the
   // first fetch, so the first render already reflects last time.
@@ -193,12 +198,20 @@ export function LibraryView({ mode, isActive }: Props) {
     const target = openTarget(node);
     setStatus(
       target
-        ? `Would open “${node.display_name}” via ${target} — the Viewer pane isn't built yet.`
+        ? `Would open “${node.display_name}” via ${target} — that viewer isn't built yet.`
         : `“${node.display_name}” has nothing to open it with.`,
     );
   }
 
   function openRow(row: ListRow) {
+    // A collector opens in the Viewer, where it can be read as icons, a
+    // list or columns. The disclosure triangle still expands it in place —
+    // two different questions ("show me inside this, here" vs "take me
+    // into this"), so two different gestures, as in Finder.
+    if (row.node_type === "collector" && onOpenCollector) {
+      onOpenCollector(row.id, row.display_name);
+      return;
+    }
     if (row.node_type === "collector") {
       toggleExpanded(row.id);
       return;
@@ -206,10 +219,18 @@ export function LibraryView({ mode, isActive }: Props) {
     announceOpen(row);
   }
 
+  /** Hand the focused item and this view's rendered order up, so the
+   * Inspector and Space follow what's focused here (G16 — the order is
+   * published live rather than copied, so it can't go stale). */
+  function publish(id: string | null) {
+    setActive(id, visibleIds);
+  }
+
   function onRowClick(e: React.MouseEvent, id: string) {
     if (e.shiftKey) setSelection((s) => Sel.rangeClick(s, id, visibleIds));
     else if (e.metaKey || e.ctrlKey) setSelection((s) => Sel.toggleClick(s, id));
     else setSelection(Sel.click(id));
+    publish(id);
   }
 
   /** How many tiles fit per row right now, read the same way build17 did:
@@ -256,7 +277,10 @@ export function LibraryView({ mode, isActive }: Props) {
           e.key === "ArrowDown" ? cols : e.key === "ArrowUp" ? -cols : e.key === "ArrowRight" ? 1 : -1;
         setSelection((s) => {
           const next = Sel.moveCursor(s, visibleIds, step, e.shiftKey);
-          if (next.cursor) landOn(next.cursor);
+          if (next.cursor) {
+            landOn(next.cursor);
+            publish(next.cursor);
+          }
           return next;
         });
         return;
@@ -266,6 +290,7 @@ export function LibraryView({ mode, isActive }: Props) {
         if (visibleIds.length) {
           setSelection(Sel.click(visibleIds[0]));
           landOn(visibleIds[0]);
+          publish(visibleIds[0]);
         }
         return;
       case "End":
@@ -274,6 +299,7 @@ export function LibraryView({ mode, isActive }: Props) {
           const last = visibleIds[visibleIds.length - 1];
           setSelection(Sel.click(last));
           landOn(last);
+          publish(last);
         }
         return;
       case "Escape":
@@ -302,6 +328,7 @@ export function LibraryView({ mode, isActive }: Props) {
       if (match) {
         setSelection(Sel.click(match));
         landOn(match);
+        publish(match);
       }
     }
   }
@@ -311,7 +338,7 @@ export function LibraryView({ mode, isActive }: Props) {
     if (!dir) return;
     setStatus(`Scanning ${dir}…`);
     try {
-      const report = await scanFolder(dir);
+      const report = await addSource(dir);
       setStatus(
         `Scanned ${dir}: ${report.created} added, ${report.updated} updated, ` +
           `${report.touched} unchanged.`,

@@ -21,11 +21,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_rows,
-            commands::scan_folder,
             commands::search_library,
             commands::get_view_prefs,
             commands::set_view_prefs,
             commands::tree_columns,
+            commands::node_detail,
+            commands::list_sources,
+            commands::add_source,
+            commands::remove_source,
+            commands::set_source_enabled,
+            commands::rescan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
