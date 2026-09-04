@@ -19,7 +19,7 @@ type Destination = {
 const DESTINATIONS: Destination[] = [
   { kind: "library", label: "Library", glyph: "▤" },
   { kind: "scattered", label: "Scattered", glyph: "⁂" },
-  { kind: null, label: "Viewer", glyph: "◉" },
+  { kind: "viewer", label: "Viewer", glyph: "◉" },
   { kind: null, label: "Graph", glyph: "❋" },
   { kind: null, label: "Discover", glyph: "✦" },
   { kind: null, label: "Inspector", glyph: "◫" },

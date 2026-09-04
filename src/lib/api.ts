@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { Hit, ListOptions, ListPage, ScanReport, ViewPrefs } from "./types";
+import type { Hit, ListOptions, ListPage, ScanReport, TreeColumn, ViewPrefs } from "./types";
 
 export function listRows(opts: ListOptions): Promise<ListPage> {
   return invoke("list_rows", {
@@ -20,6 +20,10 @@ export function searchLibrary(query: string, typeFilter?: string | null): Promis
   return invoke("search_library", {
     args: { query, typeFilter: typeFilter ?? null, limit: 50 },
   });
+}
+
+export function treeColumns(path: string[]): Promise<TreeColumn[]> {
+  return invoke("tree_columns", { path });
 }
 
 export function scanFolder(path: string): Promise<ScanReport> {

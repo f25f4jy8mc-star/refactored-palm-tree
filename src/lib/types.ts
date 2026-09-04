@@ -88,6 +88,16 @@ export interface ViewPrefs {
   density: string | null;
 }
 
+/** One column of `p_tree` — the previous column's selected row, expanded.
+ * Rows are the compact `Row` shape (same as p_detail/p_search), not
+ * ListRow — a column shows icon, name and capabilities, not group/health
+ * fields that only apply to a flat list. */
+export interface TreeColumn {
+  scope_id: string | null;
+  title: string;
+  rows: Row[];
+}
+
 export interface ScanReport {
   seen: number;
   created: number;

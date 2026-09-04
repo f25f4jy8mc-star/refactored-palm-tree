@@ -17,7 +17,7 @@ import {
 } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 
-export type PanelKind = "library" | "scattered";
+export type PanelKind = "library" | "scattered" | "viewer";
 
 export type PanelParams = { kind: PanelKind };
 

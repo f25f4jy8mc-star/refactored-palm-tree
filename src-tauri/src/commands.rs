@@ -17,6 +17,7 @@ use crate::model::extract::RealExtractor;
 use crate::model::projections::{self, ListOptions, ListPage};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
+use crate::model::tree::{self, Column};
 use crate::model::view_prefs::{self, ViewPrefs};
 
 pub struct Db(pub Mutex<Connection>);
@@ -117,6 +118,12 @@ pub fn search_library(db: State<Db>, args: SearchArgs) -> Result<Vec<Hit>, Strin
         limit: args.limit,
     };
     search::search(&conn, &args.query, &opts).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn tree_columns(db: State<Db>, path: Vec<String>) -> Result<Vec<Column>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    tree::tree(&conn, &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

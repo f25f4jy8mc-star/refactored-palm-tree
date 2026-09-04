@@ -5,6 +5,7 @@ import Dock, { DockHandle, PanelKind } from "./dock/Dock";
 import { Rail } from "./dock/Rail";
 import { TaskBar } from "./dock/TaskBar";
 import { LibraryView } from "./components/library/LibraryView";
+import { MillerView } from "./components/viewer/MillerView";
 
 function App() {
   const dockRef = useRef<DockHandle | null>(null);
@@ -16,6 +17,8 @@ function App() {
         return <LibraryView mode="library" isActive={isActive} />;
       case "scattered":
         return <LibraryView mode="scattered" isActive={isActive} />;
+      case "viewer":
+        return <MillerView isActive={isActive} />;
     }
   }, []);
 
