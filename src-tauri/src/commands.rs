@@ -14,10 +14,16 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ingest;
 use crate::model::extract::RealExtractor;
+use crate::model::facets::{self, Facet};
+use crate::model::health;
+use crate::model::identity::{self, Recheck};
 use crate::model::projections::{self, Detail, ListOptions, ListPage};
+use crate::model::record::{self, Record};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
 use crate::model::sources::{self, Source};
+use crate::model::suggest::{self, DuplicatePair};
+use crate::model::tags::{self, Tag};
 use crate::model::tree::{self, Column};
 use crate::model::view_prefs::{self, ViewPrefs};
 
@@ -211,6 +217,14 @@ pub fn rescan(app: AppHandle, db: State<Db>) -> Result<ScanReportDto, String> {
         let report =
             scan::scan(&mut conn, &roots, &exclude, &extractor).map_err(|e| e.to_string())?;
         sources::mark_scanned(&conn).map_err(|e| e.to_string())?;
+        // The scan can only say present or missing. This is where missing is
+        // refined into permission_denied, and where a drive plugged back in
+        // stops being badged (G1).
+        identity::recheck(&conn).map_err(|e| e.to_string())?;
+        // Titles and tag counts move when items are created, renamed or go
+        // missing, so the parts are recomputed once here rather than by each
+        // view working them out for itself (G20).
+        health::recompute_all(&conn).map_err(|e| e.to_string())?;
         report
     };
     // One writer, one event — every open pane refetches independently rather
@@ -252,4 +266,250 @@ pub fn node_detail(db: State<Db>, id: String) -> Result<DetailDto, String> {
         preview_ref,
         size_bytes,
     })
+}
+
+/* -------------------------------------------------------------- record */
+
+/// `p_record` — everything known about one item. The Inspector's single read.
+#[tauri::command]
+pub fn node_record(db: State<Db>, id: String) -> Result<Record, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    record::record(&conn, &id).map_err(|e| e.to_string())
+}
+
+/* ------------------------------------------------------ classification */
+
+/// The facet vocabulary. Static, but served from the backend so the frontend
+/// never holds a second copy of which tier a facet belongs to — that pair is
+/// already denormalised once in the database and a third copy in TypeScript
+/// is how the three drift.
+#[tauri::command]
+pub fn list_facets() -> Vec<&'static Facet> {
+    facets::FACETS.iter().collect()
+}
+
+#[tauri::command]
+pub fn list_tags(db: State<Db>) -> Result<Vec<Tag>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    tags::list(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_tag(app: AppHandle, db: State<Db>, name: String, facet: String) -> Result<String, String> {
+    let id = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        tags::ensure(&conn, &name, &facet).map_err(|e| e.to_string())?
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(id)
+}
+
+/// Apply one tag to a whole selection. Batch is the default shape, not an
+/// optimisation — see `model::tags`.
+#[tauri::command]
+pub fn apply_tag(
+    app: AppHandle,
+    db: State<Db>,
+    node_ids: Vec<String>,
+    tag_id: String,
+) -> Result<usize, String> {
+    let changed = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let n = tags::apply(&conn, &node_ids, &tag_id).map_err(|e| e.to_string())?;
+        health::recompute_many(&conn, &node_ids).map_err(|e| e.to_string())?;
+        n
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(changed)
+}
+
+#[tauri::command]
+pub fn remove_tag(
+    app: AppHandle,
+    db: State<Db>,
+    node_ids: Vec<String>,
+    tag_id: String,
+) -> Result<usize, String> {
+    let changed = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let n = tags::unapply(&conn, &node_ids, &tag_id).map_err(|e| e.to_string())?;
+        health::recompute_many(&conn, &node_ids).map_err(|e| e.to_string())?;
+        n
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(changed)
+}
+
+#[tauri::command]
+pub fn rename_tag(app: AppHandle, db: State<Db>, tag_id: String, name: String) -> Result<(), String> {
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        tags::rename(&conn, &tag_id, &name).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("archiva:changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_tag_facet(
+    app: AppHandle,
+    db: State<Db>,
+    tag_id: String,
+    facet: String,
+) -> Result<(), String> {
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        tags::set_facet(&conn, &tag_id, &facet).map_err(|e| e.to_string())?;
+        // Every item carrying it just changed which facet it has filled.
+        health::recompute_all(&conn).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("archiva:changed", ());
+    Ok(())
+}
+
+/// Deleting or merging a tag changes the health of items this call has no
+/// other way of naming, so both recompute everything rather than guessing.
+#[tauri::command]
+pub fn delete_tag(app: AppHandle, db: State<Db>, tag_id: String) -> Result<usize, String> {
+    let carried = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let n = tags::delete(&conn, &tag_id).map_err(|e| e.to_string())?;
+        health::recompute_all(&conn).map_err(|e| e.to_string())?;
+        n
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(carried)
+}
+
+#[tauri::command]
+pub fn merge_tags(
+    app: AppHandle,
+    db: State<Db>,
+    from: String,
+    into: String,
+) -> Result<usize, String> {
+    let moved = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let n = tags::merge(&conn, &from, &into).map_err(|e| e.to_string())?;
+        health::recompute_all(&conn).map_err(|e| e.to_string())?;
+        n
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(moved)
+}
+
+#[tauri::command]
+pub fn reorder_tag(app: AppHandle, db: State<Db>, tag_id: String, to: i64) -> Result<(), String> {
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        tags::reorder(&conn, &tag_id, to).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("archiva:changed", ());
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromotedDto {
+    pub collector_id: String,
+    pub moved: usize,
+}
+
+#[tauri::command]
+pub fn promote_tag(
+    app: AppHandle,
+    db: State<Db>,
+    tag_id: String,
+    name: Option<String>,
+    strip_tag: bool,
+) -> Result<PromotedDto, String> {
+    let out = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let p = tags::promote_to_collector(&conn, &tag_id, name.as_deref(), strip_tag)
+            .map_err(|e| e.to_string())?;
+        health::recompute_all(&conn).map_err(|e| e.to_string())?;
+        PromotedDto {
+            collector_id: p.collector_id,
+            moved: p.moved,
+        }
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(out)
+}
+
+/* --------------------------------------------------------- suggestions */
+
+#[tauri::command]
+pub fn duplicate_tags(db: State<Db>) -> Result<Vec<DuplicatePair>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    suggest::near_duplicates(&conn).map_err(|e| e.to_string())
+}
+
+/// Accept a proposed Format or Era: make the tag if it does not exist, then
+/// apply it. Accept-only is the rule — nothing here can be reached except by
+/// a person clicking accept.
+#[tauri::command]
+pub fn accept_suggestion(
+    app: AppHandle,
+    db: State<Db>,
+    node_id: String,
+    facet: String,
+    name: String,
+) -> Result<String, String> {
+    let tag_id = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let tag_id = tags::ensure(&conn, &name, &facet).map_err(|e| e.to_string())?;
+        tags::apply(&conn, &[node_id.clone()], &tag_id).map_err(|e| e.to_string())?;
+        health::recompute(&conn, &node_id).map_err(|e| e.to_string())?;
+        tag_id
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(tag_id)
+}
+
+#[tauri::command]
+pub fn dismiss_suggestion(
+    app: AppHandle,
+    db: State<Db>,
+    key: String,
+    kind: String,
+) -> Result<(), String> {
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        suggest::dismiss(&conn, &key, &kind).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("archiva:changed", ());
+    Ok(())
+}
+
+/* --------------------------------------------------- source and reach */
+
+/// Add an item that lives at a URL. It arrives `remote_uncached`: the row
+/// exists, nothing has been fetched, and no view reports it as broken.
+#[tauri::command]
+pub fn add_remote_item(
+    app: AppHandle,
+    db: State<Db>,
+    url: String,
+    title: Option<String>,
+) -> Result<String, String> {
+    let id = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let id = identity::add_remote(&conn, &url, title.as_deref()).map_err(|e| e.to_string())?;
+        health::recompute(&conn, &id).map_err(|e| e.to_string())?;
+        id
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(id)
+}
+
+/// Re-examine everything not currently present, without a full walk.
+#[tauri::command]
+pub fn recheck_availability(app: AppHandle, db: State<Db>) -> Result<Recheck, String> {
+    let out = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        identity::recheck(&conn).map_err(|e| e.to_string())?
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(out)
 }

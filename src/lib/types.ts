@@ -158,3 +158,149 @@ export interface ScanReport {
   unreadable: number;
   wentMissing: number;
 }
+
+/* ------------------------------------------------- classification (C1) */
+
+/** One facet, served from the backend rather than restated here. The
+ * facet→tier pair is already denormalised once in the database; a third copy
+ * in TypeScript is how three copies drift. */
+export interface Facet {
+  id: string;
+  label: string;
+  tier: number;
+  tier_label: string;
+  hint: string;
+  machine_fillable: boolean;
+}
+
+export interface Tag {
+  id: string;
+  name: string;
+  facet: string;
+  tier: number;
+  sort_order: number;
+  /** How many items carry it. Derived from the edges, never stored. */
+  usage: number;
+}
+
+/** Two tags in one facet that differ by a character or a plural (C4). */
+export interface DuplicatePair {
+  key: string;
+  a: Tag;
+  b: Tag;
+  reason: string;
+}
+
+/** A Format or Era read off the file's own metadata (C5). Accept-only. */
+export interface MetadataSuggestion {
+  key: string;
+  facet: string;
+  name: string;
+  evidence: string;
+}
+
+/* ------------------------------------------------------ p_record (I/C) */
+
+export interface Identity {
+  id: string;
+  nodeType: NodeType;
+  contentType: string;
+  /** The materialised conformance closure, leaf first. */
+  conformsTo: string[];
+  title: string;
+  displayName: string;
+  displaySubtitle: string;
+  iconKind: string;
+  createdAt: string;
+  indexedAt: string;
+  modifiedAt: string;
+}
+
+export type SourceKind = "local_file" | "remote_url" | "app_generated";
+
+export interface SourceFacts {
+  sourceKind: SourceKind;
+  locator: string | null;
+  parentDir: string | null;
+  filename: string | null;
+  extension: string | null;
+  sizeBytes: number | null;
+  /** BLAKE3 — an attribute beside the identity, never the identity. */
+  contentHash: string | null;
+  inode: number | null;
+  device: number | null;
+  mtime: string | null;
+  ctime: string | null;
+  availability: Availability;
+  lastSeenAt: string | null;
+}
+
+/** Four artefacts tracked separately (G3), not one thumbnail field. */
+export interface ProxySet {
+  thumbRef: string | null;
+  previewRef: string | null;
+  playableRef: string | null;
+  originalAvailable: boolean;
+  version: number;
+  state: ProxyState;
+}
+
+export interface FacetSlot {
+  facet: string;
+  label: string;
+  hint: string;
+  tier: number;
+  machineFillable: boolean;
+  tags: Tag[];
+}
+
+export interface TierBlock {
+  tier: number;
+  label: string;
+  facets: FacetSlot[];
+}
+
+export interface Classification {
+  tiers: TierBlock[];
+  suggestions: MetadataSuggestion[];
+}
+
+export interface HealthBlock {
+  score: number;
+  label: string;
+  description: string;
+  facetsFilled: number;
+  facetTarget: number;
+  titleQuality: number;
+  hasAnyTag: number;
+  unresolvedLinks: number;
+}
+
+/** One decision the reconciler recorded about this item. */
+export interface IndexEvent {
+  at: string;
+  rule: number;
+  ruleLabel: string;
+  ruleNote: string;
+  signals: string[];
+  tableVersion: number;
+  locator: string | null;
+}
+
+/** `p_record` — everything known about one item, in one call. Wraps p_detail
+ * rather than duplicating it, so the Inspector still reads one projection. */
+export interface ItemRecord extends Detail {
+  identity: Identity;
+  source: SourceFacts;
+  proxies: ProxySet;
+  classification: Classification;
+  health: HealthBlock;
+  history: IndexEvent[];
+}
+
+export interface Recheck {
+  present: number;
+  missing: number;
+  permission_denied: number;
+  remote_uncached: number;
+}

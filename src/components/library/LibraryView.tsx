@@ -103,7 +103,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   const trimmedQuery = query.trim();
   const searching = trimmedQuery.length > 0;
   const slot = useTaskbarSlot();
-  const { setActive } = useActiveItem();
+  const { setActive, setSelection: publishSelection } = useActiveItem();
 
   // Per-scope view memory (§1.9, G13) — loaded once per mode, before the
   // first fetch, so the first render already reflects last time.
@@ -225,6 +225,13 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   function publish(id: string | null) {
     setActive(id, visibleIds);
   }
+
+  // Tagging applies to a selection, not to the focused row alone (C2). The
+  // Inspector shows one item and writes to all of them, and this is the only
+  // place that knows what "all of them" currently means.
+  useEffect(() => {
+    publishSelection(visibleIds.filter((id) => Sel.isSelected(selection, id)));
+  }, [selection, visibleIds, publishSelection]);
 
   function onRowClick(e: React.MouseEvent, id: string) {
     if (e.shiftKey) setSelection((s) => Sel.rangeClick(s, id, visibleIds));

@@ -3,11 +3,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
   Detail,
+  DuplicatePair,
+  Facet,
   Hit,
+  ItemRecord,
   ListOptions,
   ListPage,
+  Recheck,
   ScanReport,
   Source,
+  Tag,
   TreeColumn,
   ViewPrefs,
 } from "./types";
@@ -77,4 +82,90 @@ export function setViewPrefs(scopeId: string, paneKind: string, prefs: ViewPrefs
 export async function pickFolder(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false });
   return typeof picked === "string" ? picked : null;
+}
+
+/* --------------------------------------------------------- p_record */
+
+/** Everything known about one item. The Inspector's single read. */
+export function nodeRecord(id: string): Promise<ItemRecord> {
+  return invoke("node_record", { id });
+}
+
+/* -------------------------------------------------- classification */
+
+export function listFacets(): Promise<Facet[]> {
+  return invoke("list_facets");
+}
+
+export function listTags(): Promise<Tag[]> {
+  return invoke("list_tags");
+}
+
+export function createTag(name: string, facet: string): Promise<string> {
+  return invoke("create_tag", { name, facet });
+}
+
+/** Applying and removing take a list, always — batch is the default shape,
+ * because tagging forty things one at a time is how a library dies. */
+export function applyTag(nodeIds: string[], tagId: string): Promise<number> {
+  return invoke("apply_tag", { nodeIds, tagId });
+}
+
+export function removeTag(nodeIds: string[], tagId: string): Promise<number> {
+  return invoke("remove_tag", { nodeIds, tagId });
+}
+
+export function renameTag(tagId: string, name: string): Promise<void> {
+  return invoke("rename_tag", { tagId, name });
+}
+
+export function setTagFacet(tagId: string, facet: string): Promise<void> {
+  return invoke("set_tag_facet", { tagId, facet });
+}
+
+export function deleteTag(tagId: string): Promise<number> {
+  return invoke("delete_tag", { tagId });
+}
+
+export function mergeTags(from: string, into: string): Promise<number> {
+  return invoke("merge_tags", { from, into });
+}
+
+export function reorderTag(tagId: string, to: number): Promise<void> {
+  return invoke("reorder_tag", { tagId, to });
+}
+
+export function promoteTag(
+  tagId: string,
+  name: string | null,
+  stripTag: boolean,
+): Promise<{ collectorId: string; moved: number }> {
+  return invoke("promote_tag", { tagId, name, stripTag });
+}
+
+export function duplicateTags(): Promise<DuplicatePair[]> {
+  return invoke("duplicate_tags");
+}
+
+export function acceptSuggestion(
+  nodeId: string,
+  facet: string,
+  name: string,
+): Promise<string> {
+  return invoke("accept_suggestion", { nodeId, facet, name });
+}
+
+export function dismissSuggestion(key: string, kind: string): Promise<void> {
+  return invoke("dismiss_suggestion", { key, kind });
+}
+
+/* ------------------------------------------------- source and reach */
+
+export function addRemoteItem(url: string, title: string | null): Promise<string> {
+  return invoke("add_remote_item", { url, title });
+}
+
+/** Re-examine everything not currently present, without a full walk. */
+export function recheckAvailability(): Promise<Recheck> {
+  return invoke("recheck_availability");
 }

@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Archiva — the model database</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Fifth in the set. The gaps and reconciliation files are matrices; a schema
+     is nodes and connections, so this one is drawn rather than tabulated.
+     Same monochrome system throughout. */
+  :root{
+    --paper:#ffffff;
+    --wash:#f6f6f6;
+    --sunk:#ededed;
+    --line:#dcdcdc;
+    --line-2:#bfbfbf;
+    --ink:#111111;
+    --ink-2:#5a5a5a;
+    --dim:#949494;
+    --hit:30px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  body{padding:0 0 80px}
+
+  .top{border-bottom:1px solid var(--line);padding:26px 28px 20px;
+    display:flex;align-items:flex-end;gap:28px;flex-wrap:wrap}
+  .mark{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:11px;
+    letter-spacing:.34em;text-transform:uppercase}
+  h1{font-family:"IBM Plex Mono",monospace;font-size:clamp(20px,3.2vw,30px);
+    font-weight:500;letter-spacing:-.02em;margin:6px 0 0;line-height:1.1}
+  .sub{font-size:13px;color:var(--ink-2);max-width:56ch;line-height:1.55;margin:8px 0 0}
+  .modes{margin-left:auto;display:flex;border:1px solid var(--line-2);
+    border-radius:7px;overflow:hidden}
+  .modes button{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;
+    text-transform:uppercase;border:0;background:var(--paper);color:var(--ink-2);
+    padding:0 15px;height:var(--hit);cursor:pointer}
+  .modes button + button{border-left:1px solid var(--line-2)}
+  .modes button[aria-pressed="true"]{background:var(--ink);color:#fff}
+  .modes button:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+
+  .tally{display:flex;border-bottom:1px solid var(--line);padding:0 28px;flex-wrap:wrap}
+  .stat{padding:14px 24px 14px 0;margin-right:24px;border-right:1px solid var(--line)}
+  .stat:last-child{border-right:0;margin-right:0}
+  .snum{font-family:"IBM Plex Mono",monospace;font-size:23px;font-weight:500;
+    letter-spacing:-.02em;display:block;line-height:1;font-variant-numeric:tabular-nums}
+  .slab{font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--dim);margin-top:7px;display:block}
+
+  .shell{display:grid;grid-template-columns:1fr 340px;align-items:start}
+  @media (max-width:1080px){.shell{grid-template-columns:1fr}}
+  .stage{padding:24px 28px 40px;min-width:0;position:relative}
+  .banner{border:1px solid var(--line);border-left:3px solid var(--ink);
+    background:var(--wash);border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 22px;
+    font-size:12.5px;line-height:1.55;color:var(--ink-2);max-width:74ch}
+  .banner b{color:var(--ink);font-weight:600}
+
+  .map{position:relative}
+  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+  .band{position:relative;z-index:1;margin:0 0 26px}
+  .bandlab{font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--dim);margin:0 0 10px}
+  .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+
+  .tbl{border:1px solid var(--line-2);border-radius:8px;background:var(--paper);
+    cursor:pointer;padding:0;text-align:left;font-family:inherit;min-width:186px;
+    overflow:hidden;transition:border-color .13s}
+  .tbl:hover{border-color:var(--ink)}
+  .tbl:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  .tbl[data-lit="1"]{border-color:var(--ink);border-width:2px}
+  .tbl[data-faded="1"]{opacity:.32}
+  .tbl.core{min-width:250px}
+  .tbl h2{font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.14em;
+    text-transform:uppercase;font-weight:500;margin:0;background:var(--ink);color:#fff;
+    padding:8px 11px;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+  .tbl h2 .c{opacity:.5;font-size:9.5px;letter-spacing:.08em}
+  .tbl .body{padding:8px 11px 10px}
+  .fl{display:flex;justify-content:space-between;gap:10px;
+    font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--ink-2);
+    padding:2px 0;line-height:1.5}
+  .fl .t{color:var(--dim);font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+    white-space:nowrap}
+  .fl.key{color:var(--ink);font-weight:500}
+  .fl.fk .t{color:var(--ink-2)}
+  .rest{font-family:"IBM Plex Mono",monospace;font-size:9.5px;color:var(--dim);
+    margin-top:6px;letter-spacing:.06em}
+  .tbl.virt h2{background:var(--paper);color:var(--ink);border-bottom:1px dashed var(--line-2)}
+  .tbl.virt h2 .c{opacity:.55;color:var(--ink-2)}
+
+  .legend{display:flex;gap:20px;flex-wrap:wrap;margin:6px 0 0;
+    font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-2)}
+  .legend span{display:inline-flex;align-items:center;gap:8px}
+  .sw{width:13px;height:13px;border:1px solid var(--ink);background:var(--ink);
+    border-radius:2px;flex:none}
+  .sw.v{background:var(--paper);border-style:dashed}
+  .swl{width:16px;height:1px;background:var(--line-2);flex:none}
+
+  .hint{font-size:11.5px;color:var(--dim);margin:16px 0 0;max-width:74ch;line-height:1.5}
+
+  /* ---------- inspector ---------- */
+  .side{position:sticky;top:20px;border-left:1px solid var(--line);
+    padding:26px 26px 40px;min-height:60vh}
+  @media (max-width:1080px){.side{position:static;border-left:0;border-top:1px solid var(--line)}}
+  .kind{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--dim);display:block;margin-bottom:10px}
+  .side h3{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:500;
+    margin:0 0 14px;letter-spacing:-.01em;line-height:1.3}
+  .field{margin:0 0 15px}
+  .flabel{font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+  .field p{font-size:12.5px;line-height:1.6;color:var(--ink-2);margin:0}
+  .field p strong{color:var(--ink);font-weight:600}
+  code{font-family:"IBM Plex Mono",monospace;font-size:11.5px;background:var(--sunk);
+    border-radius:3px;padding:1px 4px;color:var(--ink)}
+  dl.rows{border-top:1px solid var(--line);margin:0}
+  dl.rows > div{display:flex;justify-content:space-between;gap:12px;padding:7px 0;
+    border-bottom:1px solid var(--line);font-family:"IBM Plex Mono",monospace;font-size:11.5px}
+  dl.rows dt{color:var(--dim)}
+  dl.rows dd{margin:0;color:var(--ink-2);text-align:right}
+  .allf{font-family:"IBM Plex Mono",monospace;font-size:10.5px;line-height:1.7;
+    color:var(--ink-2);border-top:1px solid var(--line);padding-top:10px;margin-top:4px}
+  .allf b{color:var(--ink);font-weight:500}
+  .empty{font-size:12.5px;line-height:1.6;color:var(--dim)}
+  .empty + .empty{margin-top:12px}
+
+  /* ---------- transition strip ---------- */
+  .trans{border-top:1px solid var(--line);margin-top:10px;padding:26px 28px 0}
+  .trans h4{font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-2);margin:0 0 16px;font-weight:500}
+  .tgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+    border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .t{padding:14px 16px 16px;border-right:1px solid var(--line)}
+  .t:last-child{border-right:0}
+  @media (max-width:900px){.t{border-right:0;border-bottom:1px solid var(--line)}
+    .t:last-child{border-bottom:0}}
+  .tn{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--dim);
+    display:block;margin-bottom:6px}
+  .tname{font-family:"IBM Plex Mono",monospace;font-size:12.5px;font-weight:500;
+    display:block;margin-bottom:6px}
+  .tbody{font-size:11.5px;line-height:1.5;color:var(--ink-2)}
+  .tbody b{color:var(--ink);font-weight:600}
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div>
+    <span class="mark">Archiva · model database</span>
+    <h1>What the schema actually holds</h1>
+    <p class="sub">Eleven tables in their own file, sharing nothing with the old one. Every field below is read from the migration itself, so this cannot drift from what was written.</p>
+  </div>
+  <div class="modes" role="group" aria-label="Detail level">
+    <button id="mKey" aria-pressed="true">Key fields</button>
+    <button id="mAll" aria-pressed="false">Everything</button>
+  </div>
+</header>
+
+<div class="tally" id="tally"></div>
+
+<div class="shell">
+  <main class="stage">
+    <p class="banner" id="banner"></p>
+
+    <div class="map" id="map">
+      <svg class="wires" id="wires" aria-hidden="true"></svg>
+
+      <div class="band">
+        <p class="bandlab">The thing itself</p>
+        <div class="row" id="bandCore"></div>
+      </div>
+
+      <div class="band">
+        <p class="bandlab">What kind of thing it is — one row each, only where it applies</p>
+        <div class="row" id="bandKind"></div>
+      </div>
+
+      <div class="band">
+        <p class="bandlab">How things connect</p>
+        <div class="row" id="bandRel"></div>
+      </div>
+
+      <div class="band">
+        <p class="bandlab">Bookkeeping — no foreign key to anything</p>
+        <div class="row" id="bandKeep"></div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><i class="sw"></i> Real table</span>
+      <span><i class="sw v"></i> Search index, maintained by trigger</span>
+      <span><i class="swl"></i> Deleting the node deletes these rows</span>
+    </div>
+
+    <p class="hint">Nearly everything hangs off one table. That is the point of the unified model: a photo, a note, a tag and a collector are the same kind of row, differing only in which side table carries their extras.</p>
+  </main>
+
+  <aside class="side" id="side" aria-live="polite"></aside>
+</div>
+
+<section class="trans">
+  <h4>While both databases exist</h4>
+  <div class="tgrid" id="tgrid"></div>
+</section>
+
+<script>
+/* ==================================================================
+   Parsed directly out of migrations_model/001_model.sql. Field names,
+   types, nullability, foreign keys and index counts are the file's,
+   not a description of it.
+================================================================== */
+const SCHEMA = {"counts":{"tables":11,"indexes":22,"unique":3,"partial":12,"checks":16,"triggers":4,"fields":87},"tables":{"node":{"fields":[["id","text",1,""],["node_type","text",0,""],["content_type","text",0,""],["content_type_tree","text",0,""],["title","text",0,""],["source_kind","text",0,""],["locator","text",1,""],["parent_dir","text",1,""],["filename","text",1,""],["extension","text",1,""],["inode","integer",1,""],["device","integer",1,""],["size_bytes","integer",1,""],["content_hash","text",1,""],["mtime","text",1,""],["ctime","text",1,""],["availability","text",0,""],["last_seen_at","text",1,""],["proxy_thumb_ref","text",1,""],["proxy_preview_ref","text",1,""],["proxy_playable_ref","text",1,""],["proxy_version","integer",0,""],["proxy_state","text",0,""],["display_name","text",0,""],["display_subtitle","text",0,""],["icon_kind","text",0,""],["tagging_health","integer",0,""],["facets_filled","integer",0,""],["title_quality","integer",0,""],["has_any_tag","integer",0,""],["unresolved_links","integer",0,""],["created_at","text",0,""],["indexed_at","text",0,""],["modified_at","text",0,""]],"refs":[],"idx":8,"virtual":false},"tag":{"fields":[["node_id","text",1,"node"],["facet","text",0,""],["tier","integer",0,""],["sort_order","integer",0,""]],"refs":["node"],"idx":1,"virtual":false},"collector":{"fields":[["node_id","text",1,"node"],["collector_kind","text",0,""],["promoted_from_tag_id","text",1,"node"],["viewport_x","real",0,""],["viewport_y","real",0,""],["viewport_zoom","real",0,""]],"refs":["node"],"idx":0,"virtual":false},"note":{"fields":[["node_id","text",1,"node"],["storage","text",0,""],["body","text",0,""]],"refs":["node"],"idx":0,"virtual":false},"attribute":{"fields":[["node_id","text",0,"node"],["key","text",0,""],["value","text",1,""],["value_num","real",1,""]],"refs":["node"],"idx":2,"virtual":false},"edge":{"fields":[["id","text",1,""],["source_id","text",0,"node"],["target_id","text",1,"node"],["kind","text",0,""],["raw_target","text",1,""],["label","text",1,""],["ordinal","integer",0,""],["scope_collector_id","text",1,"node"],["status","text",0,""],["origin","text",0,""],["payload","text",1,""],["created_at","text",0,""]],"refs":["node"],"idx":7,"virtual":false},"link_target":{"fields":[["normalised","text",0,""],["node_id","text",0,"node"],["kind","text",0,""]],"refs":["node"],"idx":1,"virtual":false},"view_prefs":{"fields":[["scope_id","text",0,""],["pane_kind","text",0,""],["layout","text",1,""],["sort","text",1,""],["group_by","text",1,""],["density","text",1,""],["updated_at","text",0,""]],"refs":[],"idx":0,"virtual":false},"reconcile_log":{"fields":[["id","integer",1,""],["at","text",0,""],["node_id","text",1,""],["table_version","integer",0,""],["signals","integer",0,""],["rule","integer",0,""],["locator","text",1,""]],"refs":[],"idx":3,"virtual":false},"dismissed":{"fields":[["dismiss_key","text",1,""],["kind","text",0,""],["at","text",0,""]],"refs":[],"idx":0,"virtual":false},"search":{"fields":[["node_id","fts",0,""],["title","fts",0,""],["body","fts",0,""],["tags","fts",0,""]],"refs":[],"idx":0,"virtual":true}}};
+
+/* Annotations. Written by hand; the structure above is not. */
+const NOTES = {
+  node: {band:"core", key:["id","node_type","content_type","locator","availability","content_hash"],
+    plain:"One row per thing in the library. A photo, a note, a tag and a collector are all rows here — they differ in which side table carries their extras, not in how they are stored.",
+    why:"<strong>id</strong> is a permanent random identifier, not the file's fingerprint. The old schema used the fingerprint, so editing a note produced a second row and orphaned every link into the first. <strong>availability</strong> has four states rather than being a yes/no, so a URL nobody has fetched is not reported as a broken file.",
+    gap:"G1 · G2 · G3 · G15 · G20",
+    reads:"Every projection. p_rows and p_tree read little else."},
+
+  tag: {band:"kind", key:["node_id","facet","tier"],
+    plain:"The extras a tag needs: which of the seven categories it belongs to, which of the three levels that puts it at, and where you dragged it in the list.",
+    why:"Level is stored next to category even though category determines it, so filtering by level is a straight lookup. Because that is a second copy of one fact, a constraint checks the pair on every write rather than trusting it.",
+    gap:"G5",
+    reads:"p_graph, p_detail, p_suggest, p_search"},
+
+  collector: {band:"kind", key:["node_id","collector_kind","promoted_from_tag_id"],
+    plain:"Whether a collector is a folder or a board, whether it began life as a tag, and where a board's canvas was last scrolled to.",
+    why:"Promotion is one-way and recorded, so a board that grew out of a tag can still say so. Canvas position is user data and survives a restart, which is why it lives here and not in the interface.",
+    gap:"G5",
+    reads:"p_tree, p_board, p_rows"},
+
+  note: {band:"kind", key:["node_id","storage","body"],
+    plain:"Whether a note lives as a file on disk or inside the database, and its text if it lives here.",
+    why:"A board text card is a note with storage set to inline. The old schema kept cards in their own table with a flag that leaked out through the interface; this makes them the same kind of thing, with one capability fewer.",
+    gap:"G4",
+    reads:"p_note, p_board, p_search"},
+
+  attribute: {band:"rel", key:["node_id","key","value","value_num"],
+    plain:"Everything measured about a file: dimensions, duration, page count, frame rate, the date a photograph was taken.",
+    why:"Key and value, so a new kind of measurement needs no schema change. The numeric column exists so sorting and range queries never have to parse text. What it cannot avoid: a measurement not taken at index time needs a full re-scan to add later.",
+    gap:"§1.4",
+    reads:"p_detail, p_rows, and every capability with a condition"},
+
+  edge: {band:"rel", key:["source_id","target_id","kind","status","origin","ordinal"],
+    plain:"Every relationship in the library. Tags applied, collector membership, the four compass directions, links typed inside notes.",
+    why:"<strong>kind</strong> is stored and compass is worked out from it. The old schema wrote the same letter for tagging and for collector membership, so the two were told apart only by looking at what sat on the other end — which is why removing one could hit the other. <strong>status</strong> and <strong>origin</strong> keep what you asserted apart from what the software proposed, and make machine output reversible in bulk.",
+    gap:"G6 · G7 · G8 · G10",
+    reads:"p_graph, p_detail, p_board, p_suggest, p_note"},
+
+  link_target: {band:"rel", key:["normalised","node_id","kind"],
+    plain:"Every name a thing answers to, in a form that matches regardless of case, spacing or accents.",
+    why:"Links typed in notes currently resolve by comparing titles as text when the note is drawn, so renaming anything silently breaks every link into it. This is what makes a link point at a thing rather than at a word.",
+    gap:"G9",
+    reads:"p_note, p_search"},
+
+  view_prefs: {band:"keep", key:["scope_id","pane_kind","layout","sort"],
+    plain:"How you last looked at each folder: list or grid, sorted by what, grouped how, at what density.",
+    why:"Finder remembers this per folder and so should we. It survives a restart, which makes it your data rather than interface state — the reason it is a row here instead of something the window holds.",
+    gap:"G13",
+    reads:"p_rows, p_tree"},
+
+  reconcile_log: {band:"keep", key:["at","node_id","table_version","signals","rule"],
+    plain:"One row each time a scan decided something changed: when, which file, what was observed, and which rule fired.",
+    why:"<strong>signals</strong> is the eight observations packed into a single number, and <strong>rule</strong> is the outcome. The list of rules tested is not stored because it is implied — rule nine firing means every rule above it was tried and declined. <strong>table_version</strong> is what keeps old rows readable after the rules change. Nothing is written when nothing changed, so an idle scan costs no rows at all.",
+    gap:"§9.1",
+    reads:"Nothing yet. Undo, an audit trail, and a history view all become possible."},
+
+  dismissed: {band:"keep", key:["dismiss_key","kind"],
+    plain:"Suggestions you have waved away, so they stop coming back.",
+    why:"An explicit key, replacing a zero used as a stand-in for a missing second identifier in the old schema.",
+    gap:"G19",
+    reads:"p_suggest"},
+
+  search: {band:"rel", key:["node_id","title","body","tags"],
+    plain:"The full-text index behind the command palette. Not a table you write to — triggers keep it in step with the others.",
+    why:"Title and body are wired. Tag text is not yet: it has to be rebuilt when a relationship changes rather than when a thing changes, and that trigger belongs next to the code that maintains relationships.",
+    gap:"G18",
+    reads:"p_search"}
+};
+
+const BANDS = {core:"bandCore", kind:"bandKind", rel:"bandRel", keep:"bandKeep"};
+
+let picked = null;
+let showAll = false;
+const el = id => document.getElementById(id);
+
+/* ---------- tally ---------- */
+(function(){
+  const c = SCHEMA.counts;
+  const fk = Object.values(SCHEMA.tables).reduce(
+    (n,t) => n + t.fields.filter(f => f[3]).length, 0);
+  [[c.tables,"tables"],[c.fields,"fields"],[c.indexes,"indexes"],
+   [c.partial,"partial indexes"],[c.checks,"constraints"],[fk,"links to node"]]
+    .forEach(([n,l]) => {
+      const d = document.createElement("div");
+      d.className = "stat";
+      d.innerHTML = `<span class="snum">${n}</span><span class="slab">${l}</span>`;
+      el("tally").appendChild(d);
+    });
+})();
+
+/* ---------- tables ---------- */
+
+function fieldRow(f, isKey){
+  const [name, type, nullable, ref] = f;
+  const d = document.createElement("div");
+  d.className = "fl" + (isKey ? " key" : "") + (ref ? " fk" : "");
+  d.innerHTML = `<span>${name}${nullable ? "" : ""}</span>` +
+    `<span class="t">${ref ? "→ " + ref : type}${nullable && !ref ? " ·" : ""}</span>`;
+  return d;
+}
+
+function build(){
+  Object.values(BANDS).forEach(id => el(id).innerHTML = "");
+  Object.entries(NOTES).forEach(([name, meta]) => {
+    const t = SCHEMA.tables[name];
+    const b = document.createElement("button");
+    b.className = "tbl" + (meta.band === "core" ? " core" : "") + (t.virtual ? " virt" : "");
+    b.type = "button";
+    b.dataset.table = name;
+    b.innerHTML = `<h2>${name}<span class="c">${t.fields.length} fields${
+      t.idx ? " · " + t.idx + " idx" : ""}</span></h2>`;
+    const body = document.createElement("div");
+    body.className = "body";
+    const shown = showAll ? t.fields : t.fields.filter(f => meta.key.includes(f[0]));
+    shown.forEach(f => body.appendChild(fieldRow(f, meta.key.includes(f[0]))));
+    if (!showAll && t.fields.length > shown.length){
+      const r = document.createElement("div");
+      r.className = "rest";
+      r.textContent = `+ ${t.fields.length - shown.length} more`;
+      body.appendChild(r);
+    }
+    b.appendChild(body);
+    b.addEventListener("click", () => select(name));
+    el(BANDS[meta.band]).appendChild(b);
+  });
+  paint();
+  requestAnimationFrame(wires);
+}
+
+/* ---------- foreign key wires ---------- */
+
+function wires(){
+  const svg = el("wires");
+  const map = el("map");
+  svg.innerHTML = "";
+  if (window.innerWidth < 760) return;
+  const base = map.getBoundingClientRect();
+  const nodeEl = document.querySelector('[data-table="node"]');
+  if (!nodeEl) return;
+  const nr = nodeEl.getBoundingClientRect();
+  const nx = nr.left - base.left + nr.width / 2;
+  const nb = nr.bottom - base.top;
+  const nt = nr.top - base.top;
+
+  Object.entries(SCHEMA.tables).forEach(([name, t]) => {
+    if (name === "node" || !t.refs.includes("node")) return;
+    const e = document.querySelector(`[data-table="${name}"]`);
+    if (!e) return;
+    const r = e.getBoundingClientRect();
+    const x = r.left - base.left + r.width / 2;
+    const below = r.top - base.top > nb;
+    const y = below ? r.top - base.top : r.bottom - base.top;
+    const ny = below ? nb : nt;
+    const mid = (y + ny) / 2;
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", `M ${nx} ${ny} L ${nx} ${mid} L ${x} ${mid} L ${x} ${y}`);
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", picked && picked !== name && picked !== "node" ? "#ececec" : "#bfbfbf");
+    p.setAttribute("stroke-width", "1");
+    svg.appendChild(p);
+  });
+}
+
+/* ---------- selection ---------- */
+
+function paint(){
+  document.querySelectorAll(".tbl").forEach(t => {
+    t.dataset.lit = t.dataset.table === picked ? "1" : "0";
+    const related = picked === "node" && SCHEMA.tables[t.dataset.table].refs.includes("node");
+    t.dataset.faded = (picked && t.dataset.table !== picked && !related) ? "1" : "0";
+  });
+  wires();
+}
+
+function select(name){
+  picked = (picked === name) ? null : name;
+  paint();
+  renderSide();
+  renderBanner();
+}
+
+/* ---------- copy ---------- */
+
+function renderBanner(){
+  if (picked){
+    const t = SCHEMA.tables[picked];
+    const fks = t.fields.filter(f => f[3]).map(f => f[0]);
+    el("banner").innerHTML = `<b>${picked} — ${t.fields.length} fields, ${t.idx} index${
+      t.idx === 1 ? "" : "es"}.</b> ` +
+      (fks.length ? `Tied to the main table through ${fks.join(", ")}; deleting a thing deletes these rows with it.`
+                  : `Stands alone — no foreign key, so it survives whatever happens to the things it mentions.`);
+    return;
+  }
+  const hang = Object.values(SCHEMA.tables).filter(t => t.refs.includes("node")).length;
+  el("banner").innerHTML = `<b>Eleven tables, ${SCHEMA.counts.fields} fields, ` +
+    `${SCHEMA.counts.checks} constraints.</b> ${hang} of the eleven hang off the main table and ` +
+    `disappear with it. The rest are bookkeeping and deliberately do not, so a log of what happened ` +
+    `survives the thing it happened to.`;
+}
+
+function renderSide(){
+  const host = el("side");
+  if (!picked){
+    host.innerHTML = `
+      <span class="kind">Reading the map</span>
+      <h3>One table, four satellites</h3>
+      <p class="empty">Click any table for what it holds in plain terms, and why it is shaped that way. Click <strong>node</strong> to see everything that depends on it.</p>
+      <p class="empty">The four bands are not arbitrary. The first is the thing itself; the second is what kind of thing it is; the third is how things connect; the fourth is bookkeeping that must outlive the things it describes.</p>
+      <p class="empty">Switch to <strong>Everything</strong> above to see all ${SCHEMA.counts.fields} fields rather than the ones that carry the argument.</p>`;
+    return;
+  }
+  const t = SCHEMA.tables[picked];
+  const meta = NOTES[picked];
+  const nullable = t.fields.filter(f => f[2] && !f[3]).length;
+  const fks = t.fields.filter(f => f[3]);
+  host.innerHTML = `
+    <span class="kind">${t.virtual ? "Search index" : "Table"} · ${t.fields.length} fields</span>
+    <h3>${picked}</h3>
+    <div class="field"><div class="flabel">What it holds</div><p>${meta.plain}</p></div>
+    <div class="field"><div class="flabel">Why it is shaped this way</div><p>${meta.why}</p></div>
+    <dl class="rows">
+      <div><dt>indexes</dt><dd>${t.idx || "—"}</dd></div>
+      <div><dt>optional fields</dt><dd>${nullable}</dd></div>
+      <div><dt>points at</dt><dd>${fks.length ? fks.map(f => f[0] + " → " + f[3]).join("<br>") : "nothing"}</dd></div>
+      <div><dt>closes</dt><dd>${meta.gap}</dd></div>
+    </dl>
+    <div class="field" style="margin-top:15px"><div class="flabel">Read by</div><p>${meta.reads}</p></div>
+    <div class="allf"><b>All fields</b><br>${t.fields.map(f =>
+      f[3] ? `${f[0]} → ${f[3]}` : f[0] + (f[2] ? " ·" : "")).join(", ")}</div>`;
+}
+
+/* ---------- modes ---------- */
+
+const mKey = el("mKey"), mAll = el("mAll");
+function setMode(all){
+  showAll = all;
+  mKey.setAttribute("aria-pressed", String(!all));
+  mAll.setAttribute("aria-pressed", String(all));
+  build();
+  renderSide();
+}
+mKey.addEventListener("click", () => setMode(false));
+mAll.addEventListener("click", () => setMode(true));
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && picked){ picked = null; paint(); renderSide(); renderBanner(); }
+});
+window.addEventListener("resize", () => requestAnimationFrame(wires));
+window.addEventListener("load", () => requestAnimationFrame(wires));
+
+/* ---------- transition ---------- */
+
+const TRANS = [
+  {n:"01", name:"Two files, briefly",
+   body:"The old database keeps running Build 17. The new one fills up beside it. Nothing is deleted until the last view has moved across."},
+  {n:"02", name:"Truth is split",
+   body:"A converted view reads the new file; an unconverted one reads the old. <b>Tag something in Library before Library converts and Compass will not see it.</b> That is the real cost of not rewriting everything at once."},
+  {n:"03", name:"So convert the writers early",
+   body:"Views that only read can wait. Views that create tags, links and collectors should move first, to keep the window where the two files disagree as short as possible."},
+  {n:"04", name:"One door between them",
+   body:"<code>open_for_backfill()</code> is the only place that sees both files, and only to carry existing tags, collectors and links across. Nothing else touches two databases."}
+];
+
+(function(){
+  TRANS.forEach(t => {
+    const d = document.createElement("div");
+    d.className = "t";
+    d.innerHTML = `<span class="tn">${t.n}</span><span class="tname">${t.name}</span>
+      <span class="tbody">${t.body}</span>`;
+    el("tgrid").appendChild(d);
+  });
+})();
+
+build();
+renderBanner();
+renderSide();
+</script>
+</body>
+</html>

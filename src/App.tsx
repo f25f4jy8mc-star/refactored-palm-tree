@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import "./App.css";
 import Dock, { DockHandle, PanelKind, PanelParams } from "./dock/Dock";
-import { Rail } from "./dock/Rail";
+import { Rail, type Flyout } from "./dock/Rail";
 import { TaskBar } from "./dock/TaskBar";
 import { ActiveItemProvider, useActiveItem } from "./lib/activeItem";
 import { LIST_OWNING_PANES, isTyping, resolve } from "./lib/shortcuts";
@@ -11,12 +11,13 @@ import { ViewerPane } from "./components/viewer/ViewerPane";
 import { InspectorView } from "./components/inspector/InspectorView";
 import { PreviewOverlay } from "./components/preview/PreviewOverlay";
 import { SourcesFlyout } from "./components/sources/SourcesFlyout";
+import { TagsFlyout } from "./components/tags/TagsFlyout";
 
 function Shell() {
   const dockRef = useRef<DockHandle | null>(null);
   const [activeKind, setActiveKind] = useState<PanelKind | null>("library");
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [flyout, setFlyout] = useState<Flyout | null>(null);
   const active = useActiveItem();
   const activeId = active.id;
   // The provider hands out a fresh object every render on purpose (it is
@@ -113,14 +114,15 @@ function Shell() {
   }, [activeId, previewOpen, activeKind]);
 
   return (
-    <div className="shell" onClick={() => sourcesOpen && setSourcesOpen(false)}>
+    <div className="shell" onClick={() => flyout && setFlyout(null)}>
       <Rail
         activeKind={activeKind}
-        sourcesOpen={sourcesOpen}
+        flyout={flyout}
         onOpen={(kind, title) => dockRef.current?.open(kind, title)}
-        onToggleSources={() => setSourcesOpen((o) => !o)}
+        onToggleFlyout={(which) => setFlyout((f) => (f === which ? null : which))}
       />
-      {sourcesOpen && <SourcesFlyout onClose={() => setSourcesOpen(false)} />}
+      {flyout === "sources" && <SourcesFlyout onClose={() => setFlyout(null)} />}
+      {flyout === "tags" && <TagsFlyout onClose={() => setFlyout(null)} />}
       <div className="main">
         <div className="dock-area">
           <Dock

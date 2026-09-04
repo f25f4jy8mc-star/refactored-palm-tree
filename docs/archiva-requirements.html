@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Archiva — requirements checklist</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#111111;
+    --ink-2:#4a4a4a;
+    --ink-3:#7d7d7d;
+    --rule:#d4d4d4;
+    --rule-2:#eaeaea;
+    --paper:#fbfbfa;
+    --panel:#ffffff;
+    --sans:"IBM Plex Sans",system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------------- header ---------------- */
+  header{border-bottom:1px solid var(--ink);padding:28px 24px 18px}
+  h1{font-size:19px;font-weight:600;margin:0;letter-spacing:-0.01em}
+  .sub{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);margin:6px 0 0;max-width:66ch}
+  .lede{margin:14px 0 0;max-width:62ch;color:var(--ink-2);font-size:14px}
+
+  /* ---------------- tally ---------------- */
+  .tally{display:flex;flex-wrap:wrap;border-bottom:1px solid var(--rule)}
+  .tally button{
+    flex:1 1 150px;min-width:120px;text-align:left;background:none;cursor:pointer;
+    border:0;border-right:1px solid var(--rule-2);
+    padding:14px 18px;font-family:inherit;color:inherit;
+  }
+  .tally button:last-child{border-right:0}
+  .tally button[aria-pressed="false"]{opacity:.34}
+  .tally button:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+  .tally .n{font-family:var(--mono);font-size:26px;line-height:1;display:block}
+  .tally .k{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-top:7px;display:flex;gap:7px;align-items:center}
+
+  /* status marks — weight carries meaning, not colour */
+  .mk{width:9px;height:9px;flex:none;border:1px solid var(--ink);display:inline-block}
+  .mk.carry{background:var(--ink)}
+  .mk.rebuild{background:linear-gradient(135deg,var(--ink) 0 50%,transparent 50% 100%)}
+  .mk.spec{background:none}
+  .mk.open{background:none;border-style:dotted;border-width:1.5px}
+
+  /* ---------------- shell ---------------- */
+  .shell{display:grid;grid-template-columns:minmax(0,1fr) 370px;align-items:start}
+  main{border-right:1px solid var(--rule);min-width:0}
+
+  .area{border-bottom:1px solid var(--rule)}
+  .area > h2{
+    margin:0;padding:20px 24px 4px;font-size:13px;font-weight:600;
+    display:flex;justify-content:space-between;gap:16px;align-items:baseline;
+  }
+  .area .count{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;flex:none}
+  .area .blurb{margin:0;padding:0 24px 12px;color:var(--ink-3);font-size:13px;max-width:60ch}
+
+  ul{list-style:none;margin:0;padding:0}
+  li{border-top:1px solid var(--rule-2)}
+  .row{
+    width:100%;display:flex;gap:13px;align-items:baseline;text-align:left;
+    background:none;border:0;padding:11px 24px;cursor:pointer;
+    font:inherit;color:inherit;
+  }
+  .row:hover{background:#f2f2f0}
+  .row[aria-current="true"]{background:var(--ink);color:#fff}
+  .row[aria-current="true"] .mk{border-color:#fff}
+  .row[aria-current="true"] .mk.carry{background:#fff}
+  .row[aria-current="true"] .mk.rebuild{background:linear-gradient(135deg,#fff 0 50%,transparent 50% 100%)}
+  .row[aria-current="true"] .rid{color:#bdbdbd}
+  .row:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+  .row .mk{position:relative;top:1px}
+  .rid{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none;width:24px}
+  .rlabel{flex:1;min-width:0}
+
+  /* ---------------- side ---------------- */
+  aside{
+    position:sticky;top:0;max-height:100vh;overflow-y:auto;
+    background:var(--panel);padding:24px;
+  }
+  .empty{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);line-height:1.7}
+  .empty b{display:block;color:var(--ink);font-weight:500;margin-bottom:10px}
+  .empty ol{padding-left:16px;margin:0}
+  .empty li{border:0;margin-bottom:7px}
+
+  .d-id{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+  .d-title{font-size:17px;font-weight:600;margin:5px 0 0;letter-spacing:-0.01em}
+  .d-status{
+    display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:10.5px;
+    margin:14px 0 0;padding:9px 0;border-top:1px solid var(--ink);border-bottom:1px solid var(--rule);
+  }
+  .d-h{
+    font-family:var(--mono);font-size:10px;color:var(--ink-3);
+    margin:20px 0 6px;padding-bottom:5px;border-bottom:1px solid var(--rule-2);
+  }
+  .d-body{margin:0;font-size:14px;color:var(--ink-2)}
+  .d-note{margin:16px 0 0;font-size:12.5px;color:var(--ink-3);font-style:italic}
+
+  .foot{
+    border-top:1px solid var(--ink);padding:18px 24px 40px;
+    font-family:var(--mono);font-size:10.5px;color:var(--ink-3);line-height:1.7;
+  }
+  .foot p{margin:0 0 6px;max-width:78ch}
+
+  @media (max-width:880px){
+    .shell{grid-template-columns:1fr}
+    main{border-right:0}
+    aside{position:static;max-height:none;border-top:1px solid var(--ink)}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    .row{transition:background 90ms linear}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Archiva — requirements checklist</h1>
+  <p class="sub" id="sub"></p>
+  <p class="lede">Every requirement carried forward from the concept sessions, Build&nbsp;17 and the Phase&nbsp;0 model work. Sorted by what still has to happen to it, not by what it does. Select a status to filter; select a line for the detail and the reason behind it.</p>
+</header>
+
+<div class="tally" id="tally"></div>
+
+<div class="shell">
+  <main id="main"></main>
+  <aside id="side" aria-live="polite"></aside>
+</div>
+
+<div class="foot" id="foot"></div>
+
+<script id="data" type="application/json">{
+  "meta": {
+    "app": "Archiva",
+    "subtitle": "Self-hosted visual archive and idea-development tool for creators and archivists",
+    "compiled": "2026-09-04",
+    "sources": [
+      "Chat: Refining a tool concept through critical questions (concept → Build 17 → audit → rebuild handoff)",
+      "Chat: Archiva rebuild — canonical model validation (Phase 0 spec, gap matrix, indexer, Compass addendum)"
+    ]
+  },
+  "statuses": {
+    "carry": {
+      "label": "Written and tested — carry across unchanged",
+      "note": "Rust modules under src-tauri/src/model/ plus migrations_model/001_model.sql. Not to be rewritten by the new build."
+    },
+    "rebuild": {
+      "label": "Worked in Build 17 — must be rebuilt on the new model",
+      "note": "The behaviour is proven and the code is not. Build 17 is being left behind, so each of these is a fresh implementation against the Phase 0 spec."
+    },
+    "spec": {
+      "label": "Specified in Phase 0 — never built",
+      "note": "Defined field by field in archiva-phase-0-model.md. No code exists."
+    },
+    "open": {
+      "label": "Undecided — needs your call",
+      "note": "Deliberately left open, usually because it needs a real library to answer."
+    }
+  },
+  "areas": [
+    {
+      "id": "identity",
+      "label": "Identity and indexing",
+      "blurb": "How a file on disk becomes a row in the database, and stays the same row when it moves."
+    },
+    {
+      "id": "classify",
+      "label": "Classification",
+      "blurb": "Tags, facets, tiers, and how much of an item's description is filled in."
+    },
+    {
+      "id": "structure",
+      "label": "Structure and links",
+      "blurb": "Collectors, boards, notes, and the edges between everything."
+    },
+    {
+      "id": "views",
+      "label": "Views",
+      "blurb": "The twelve surfaces. Each reads the model through exactly one projection."
+    },
+    {
+      "id": "content",
+      "label": "Content handling",
+      "blurb": "Proxies, formats, playback and preview for image, video, audio, 3D and PDF."
+    },
+    {
+      "id": "platform",
+      "label": "Platform and stack",
+      "blurb": "The frameworks, languages and libraries the app is built from."
+    },
+    {
+      "id": "ship",
+      "label": "Packaging and distribution",
+      "blurb": "Getting the app onto a machine, and getting an archive out of it."
+    },
+    {
+      "id": "later",
+      "label": "Deferred capability",
+      "blurb": "Named in the original brief, scheduled late on purpose."
+    }
+  ],
+  "items": [
+    {
+      "id": "I1",
+      "area": "identity",
+      "label": "UUID v7 as node identity",
+      "status": "carry",
+      "detail": "Every node gets an identifier minted once by the indexer, which never changes and is never derived from the file's contents. UUID v7 sorts by creation time, so ordering by id is a free stable tiebreaker.",
+      "why": "Build 17 used the content hash as identity. Editing a note changed its bytes, which changed its hash, which created a second node — the duplicate-record bug class."
+    },
+    {
+      "id": "I2",
+      "area": "identity",
+      "label": "BLAKE3 hash demoted to an attribute",
+      "status": "carry",
+      "detail": "content_hash is stored for deduplication, integrity and change detection, and is nullable. The index on it is deliberately not unique.",
+      "why": "Two files may legitimately hold identical bytes. The unique index in Build 17 is the direct cause of the duplicate-node bug."
+    },
+    {
+      "id": "I3",
+      "area": "identity",
+      "label": "Reconciliation ladder — thirteen rules",
+      "status": "carry",
+      "detail": "Given a file, decide what happened to it: new, unchanged, edited in place, renamed, moved to another volume, copied, restored from backup, saved by an app, mid-download, unreadable. Rules are read in order and the first match wins.",
+      "why": "Verified before it was written: all 512 signal combinations swept with no holes, and thirteen named real-world scenarios each landing on the intended rule. Those assertions are now Rust tests."
+    },
+    {
+      "id": "I4",
+      "area": "identity",
+      "label": "Move detection via inode, then hash, then path",
+      "status": "carry",
+      "detail": "Identity survives an external move. Notes carry their UUID in frontmatter as archiva-id. Media cannot, so the ladder tries (inode, device), then content_hash, then (filename, size, mtime).",
+      "why": "Files get renamed and reorganised outside the app. Path-based identity breaks every link when that happens."
+    },
+    {
+      "id": "I5",
+      "area": "identity",
+      "label": "Filesystem walk and scan",
+      "status": "carry",
+      "detail": "scan.rs walks the watch roots, gathers signals per file, and applies the ladder. A second scan over an unchanged library must be entirely rule 6 with nothing created, nothing updated, and no new log rows.",
+      "why": "That idempotence check is the test that catches a rule firing when it shouldn't, and the rule number names which one."
+    },
+    {
+      "id": "I6",
+      "area": "identity",
+      "label": "Content-type classification and conformance closure",
+      "status": "carry",
+      "detail": "Each item gets a leaf content_type in UTI style, such as public.jpeg, plus content_type_tree — the full list of types it conforms to, stored leaf-first.",
+      "why": "This is what lets a filter mean 'anything that is an image' and pick up HEIC and Photoshop files without anyone editing a list."
+    },
+    {
+      "id": "I7",
+      "area": "identity",
+      "label": "Build 17 backfill",
+      "status": "carry",
+      "detail": "backfill.rs converts an existing v1 library into the new schema in one transaction: splits every old North link into tag_of, contains or compass_n; recomputes tags stored at the wrong tier; unpacks metadata JSON into sortable rows; preserves missing flags.",
+      "why": "Run it before the first scan of the new database. Scanning first creates nodes at the same paths, the unique locator index rejects the backfill, and the whole thing aborts."
+    },
+    {
+      "id": "I8",
+      "area": "identity",
+      "label": "Watch folders — multiple, individually enabled",
+      "status": "rebuild",
+      "detail": "The user nominates folders to index. Each can be switched off without losing its items.",
+      "why": "Worked in Build 17 behind the Sources flyout. Behaviour proven, code not carried."
+    },
+    {
+      "id": "I9",
+      "area": "identity",
+      "label": "Availability as four states",
+      "status": "spec",
+      "detail": "present, missing, remote_uncached, permission_denied — with last_seen_at alongside.",
+      "why": "Gap G1. A single missing flag cannot tell an unplugged drive from a web link nobody has fetched yet, so healthy remote items get badged as broken."
+    },
+    {
+      "id": "I10",
+      "area": "identity",
+      "label": "Three source kinds",
+      "status": "spec",
+      "detail": "source_kind is local_file, remote_url or app_generated, with a single locator field holding either a path or a URL. Filesystem fields become nullable.",
+      "why": "Gap G2. Build 17 could already import a URL, but the model assumed every item was a file with a path, parent directory, inode and size."
+    },
+    {
+      "id": "I11",
+      "area": "identity",
+      "label": "Fuller metadata extraction",
+      "status": "spec",
+      "detail": "Dimensions, duration, codecs and page counts, extracted at index time into sortable rows.",
+      "why": "Build 17 extracts four attribute keys. Seeking in the player needs duration; the inspector wants dimensions and codecs. ffmpeg is already a dependency."
+    },
+    {
+      "id": "I12",
+      "area": "identity",
+      "label": "Move-detection ordering across volumes",
+      "status": "open",
+      "detail": "Trying inode first is correct on a single disk and wrong across two, where inode numbers collide. Hashing first is always correct but costs a full read of every file.",
+      "why": "Needs a real library to answer — the right choice depends on how big yours is and whether it spans drives."
+    },
+    {
+      "id": "I13",
+      "area": "identity",
+      "label": "Sort key storage and locale",
+      "status": "open",
+      "detail": "Precomputing sort keys makes sorting a lookup, but sorting names correctly is language-dependent, so the keys become language-dependent too. Either store one set per language or accept a live comparison for the name sort only.",
+      "why": "Only affects the name sort. Every other sort is on a number or a date."
+    },
+    {
+      "id": "C1",
+      "area": "classify",
+      "label": "Six facets in three tiers",
+      "status": "rebuild",
+      "detail": "Tier 1 Metadata: Format, Era — largely filled from file metadata. Tier 2 Classification: Environment, Action. Tier 3 Content: Attribute, Subject — pure human judgement. All facets optional per item.",
+      "why": "The three tiers are also the three layers the map cycles through: structural, then contextual, then interpretive."
+    },
+    {
+      "id": "C2",
+      "area": "classify",
+      "label": "Tag create, apply, remove — including in batch",
+      "status": "rebuild",
+      "detail": "Tags applied to one item or to a multi-selection at once.",
+      "why": "Batch operations everywhere are the main defence against classification fatigue, which is the named risk that kills the library at item forty."
+    },
+    {
+      "id": "C3",
+      "area": "classify",
+      "label": "Tag rename, delete, merge, reorder",
+      "status": "rebuild",
+      "detail": "Full tag management, separate from applying tags to items.",
+      "why": "Worked in Build 17's Tags view."
+    },
+    {
+      "id": "C4",
+      "area": "classify",
+      "label": "Near-duplicate tag detection",
+      "status": "rebuild",
+      "detail": "Catches tags that differ by a character or a plural, and offers a merge. Dismissing keeps both permanently.",
+      "why": "This is tier 1 of the suggestion ladder and needs no machine learning."
+    },
+    {
+      "id": "C5",
+      "area": "classify",
+      "label": "Metadata suggestions, accept-only",
+      "status": "rebuild",
+      "detail": "Format and Era proposed from file metadata, and a dominant-colour reading proposed as an Attribute. Nothing is ever applied automatically.",
+      "why": "Accept-only is the rule. Whether dominant colour is a useful suggestion at all is worth re-testing — it was flagged as cheap to keep and easy to drop."
+    },
+    {
+      "id": "C6",
+      "area": "classify",
+      "label": "Tag to Collector promotion",
+      "status": "rebuild",
+      "detail": "Turn a tag into a Collector, with a rename and an option to strip the original tag. Deliberately one-way.",
+      "why": "The rule the onboarding states once: tags describe, Collectors aggregate. Promotion being one-way is what keeps the two concepts from blurring."
+    },
+    {
+      "id": "C7",
+      "area": "classify",
+      "label": "Health as a score plus its components",
+      "status": "spec",
+      "detail": "Keep the 0–3 score for ranking, and store facets_filled, title_quality, has_any_tag and unresolved_links alongside it.",
+      "why": "Gap G20. One integer cannot distinguish well-tagged-but-badly-named from well-named-but-untagged, and those need different prompts. In Build 17 the bucket labels are a switch statement inside the view."
+    },
+    {
+      "id": "C8",
+      "area": "classify",
+      "label": "Sub-tags — keep or cut",
+      "status": "open",
+      "detail": "The parent_tag_id column exists in Build 17 with no interface to use it. Six facets across three tiers may already give all the depth you want.",
+      "why": "One of three decisions the audit put to you and you have not yet answered."
+    },
+    {
+      "id": "S1",
+      "area": "structure",
+      "label": "Collectors as nestable folders",
+      "status": "rebuild",
+      "detail": "Create, rename, nest — and delete.",
+      "why": "Delete is called out separately because the audit found it had no path anywhere in Build 17's interface. It was a regression, not a design choice."
+    },
+    {
+      "id": "S2",
+      "area": "structure",
+      "label": "Collectors as boards",
+      "status": "rebuild",
+      "detail": "A Miro or Figma style freeform canvas holding media, notes and other nodes placed anywhere, with links drawn between them.",
+      "why": "The project-by-project workspace from the original brief."
+    },
+    {
+      "id": "S3",
+      "area": "structure",
+      "label": "Board cards carry size and stacking order",
+      "status": "spec",
+      "detail": "Cards get width, height and a z value, and text cards become real nodes rather than rows in a side table.",
+      "why": "Gap G10. Build 17 stores position only, so cards cannot be resized or brought to front, and a board's text cards are invisible to every other view."
+    },
+    {
+      "id": "S4",
+      "area": "structure",
+      "label": "Compass links — north, south, east, west",
+      "status": "rebuild",
+      "detail": "Four directional slots for relating any item to any other, with optional labels.",
+      "why": "The core relating gesture of the app."
+    },
+    {
+      "id": "S5",
+      "area": "structure",
+      "label": "North and south invert; east and west do not",
+      "status": "spec",
+      "detail": "Viewed from the other end, a north link reads as south. A west link still reads as west, and an east link still reads as east.",
+      "why": "Gap G23, and the strongest argument for doing this work on paper. The first draft inverted all four. Marking something as opposing this item would have read as merely related from its own side — silently weakening a claim you made. No view before Compass reads a link from both ends at once, so nothing else would have caught it."
+    },
+    {
+      "id": "S6",
+      "area": "structure",
+      "label": "Edges store a kind; compass is derived from it",
+      "status": "spec",
+      "detail": "tag_of, contains, compass_n, compass_s, compass_e, compass_w, wikilink, embed. A dropped tag becomes tag_of, a dropped collector becomes contains, anything else becomes a compass edge.",
+      "why": "Gap G7. Build 17 stores tagging and collector membership identically as direction='N', so what a row means is only recoverable by looking at what it points to."
+    },
+    {
+      "id": "S7",
+      "area": "structure",
+      "label": "Edges record who asserted them",
+      "status": "spec",
+      "detail": "Each edge carries an origin and a status, so a fact you stated is distinguishable from a machine suggestion.",
+      "why": "Gap G8, and the precondition for ever shipping suggested links. The Inspector currently cannot tell the two apart."
+    },
+    {
+      "id": "S8",
+      "area": "structure",
+      "label": "Board-scoped links",
+      "status": "spec",
+      "detail": "Links that exist only within one board, via a nullable scope_collector_id, surfaced elsewhere as a list in the item's inspect panel.",
+      "why": "Schema and backend support exist in Build 17 with no interface. Costs one nullable column to keep."
+    },
+    {
+      "id": "S9",
+      "area": "structure",
+      "label": "Markdown notes stored as files on disk",
+      "status": "rebuild",
+      "detail": "Live preview, a read mode, and autosave. The note is a real .md file you could open in any other editor.",
+      "why": "Third-party-free and self-hosted was requirement one. Notes being plain files on your disk is what makes that true rather than claimed."
+    },
+    {
+      "id": "S10",
+      "area": "structure",
+      "label": "Wikilinks and embeds with a resolution index",
+      "status": "spec",
+      "detail": "[[link]] and ![[embed]] are separate edge kinds. Each stores the raw text always and a resolved target when one is found. Creating a node with a matching title resolves waiting links; renaming re-resolves both directions.",
+      "why": "Gap G9. Build 17 resolves links by matching the title string at the moment of rendering, so renaming a note silently breaks every link to it and nothing can report how many links are broken."
+    },
+    {
+      "id": "S11",
+      "area": "structure",
+      "label": "A named write path",
+      "status": "spec",
+      "detail": "link(source, target, compass), unlink(edge_id), reorder(edge_id, ordinal). Each bumps the item's revision once and emits one change event.",
+      "why": "Gap G24. Phase 0 defined nine ways to read the model and none to change it — invisible until Compass, which creates and destroys edges by dragging."
+    },
+    {
+      "id": "S12",
+      "area": "structure",
+      "label": "View preferences persisted per folder",
+      "status": "spec",
+      "detail": "Layout, sort, grouping and density stored in the database against a scope, not held in component state.",
+      "why": "Gap G13. In Build 17 the layout lives in React state, so it is lost on remount and two panes showing the same collector can disagree. This is your data, so it belongs in a row."
+    },
+    {
+      "id": "V1",
+      "area": "views",
+      "label": "Library",
+      "status": "rebuild",
+      "detail": "Reads p_rows. The main list of everything.",
+      "why": "Blocked by twelve of the twenty gaps — the most of any view, which is the argument for converting it first."
+    },
+    {
+      "id": "V2",
+      "area": "views",
+      "label": "Scattered",
+      "status": "rebuild",
+      "detail": "Reads p_rows and p_health. Untagged and under-described items, bucketed by how much is missing. A soft gate: items are usable but visibly unprocessed.",
+      "why": "The soft gate was a decision, not a default. Minimum ingest is zero required fields."
+    },
+    {
+      "id": "V3",
+      "area": "views",
+      "label": "Miller columns",
+      "status": "rebuild",
+      "detail": "Reads p_tree. Finder-style cascading columns.",
+      "why": "Build 17 makes two backend calls per column and merges them in the view, because no projection returns a whole column."
+    },
+    {
+      "id": "V4",
+      "area": "views",
+      "label": "Collector grid",
+      "status": "rebuild",
+      "detail": "Reads p_rows. The same rows as Library at a different density.",
+      "why": "Only differs from Library by density, and density had nowhere to persist until G13."
+    },
+    {
+      "id": "V5",
+      "area": "views",
+      "label": "Board",
+      "status": "rebuild",
+      "detail": "Reads p_board, returning a viewport, cards sorted by stacking order, and edges.",
+      "why": "Nearly independent of the other views — its problems are almost all its own, so it can be worked in parallel."
+    },
+    {
+      "id": "V6",
+      "area": "views",
+      "label": "Note editor",
+      "status": "rebuild",
+      "detail": "Reads p_note. Markdown editing with live preview.",
+      "why": "Cannot currently report which links are unresolved, because resolution happens at render time."
+    },
+    {
+      "id": "V7",
+      "area": "views",
+      "label": "Inspector",
+      "status": "rebuild",
+      "detail": "Reads p_detail. Everything known about one item, including its compass slots.",
+      "why": "Also blocked by twelve gaps, which is the argument for converting it last — it touches more of the model than anything else."
+    },
+    {
+      "id": "V8",
+      "area": "views",
+      "label": "Graph",
+      "status": "rebuild",
+      "detail": "Reads p_graph. The web of connecting clusters from the original brief, with node degree broken down by edge kind.",
+      "why": "Build 17 sizes nodes by tag usage and filters by whether a thumbnail file exists — reading storage details directly instead of asking the model."
+    },
+    {
+      "id": "V9",
+      "area": "views",
+      "label": "Discover",
+      "status": "spec",
+      "detail": "Reads p_suggest. Pairs of items sharing two or more tags with no link between them, plus items with no connections at all.",
+      "why": "The entire no-machine-learning half of the original brief. The backend is written and tested in Build 17 and has never had an interface. Build it or delete it — the audit's first open decision."
+    },
+    {
+      "id": "V10",
+      "area": "views",
+      "label": "Preview",
+      "status": "rebuild",
+      "detail": "Reads p_detail. Full-size viewing with playback, stepping through neighbours.",
+      "why": "Build 17 steps through siblings using a list of ids copied in as a prop, which goes stale the moment the underlying list changes."
+    },
+    {
+      "id": "V11",
+      "area": "views",
+      "label": "Command palette",
+      "status": "rebuild",
+      "detail": "Reads p_search, which returns one ranked list marking each hit as matching on name, body or an associated tag.",
+      "why": "Build 17 makes two searches and interleaves them by hand, so ranking across the two is guesswork. Its type filters compare strings instead of asking the type system."
+    },
+    {
+      "id": "V12",
+      "area": "views",
+      "label": "Compass",
+      "status": "spec",
+      "detail": "The four-slot relating surface, validated as a twelfth view after Phase 0 was written. Each slot entry carries the far node's full row so one call draws the whole compass.",
+      "why": "Validating it produced four further findings, including the east–west inversion error. Slot overflow is still open: four tiles fit a rail and forty do not, and the projection must return a total per direction whatever is decided."
+    },
+    {
+      "id": "V13",
+      "area": "views",
+      "label": "Contour view",
+      "status": "spec",
+      "detail": "A tag-boundary layout, drawing regions around groups rather than points and lines.",
+      "why": "The one view from the original concept that was never built at all."
+    },
+    {
+      "id": "M1",
+      "area": "content",
+      "label": "Four proxy artefacts, tracked separately",
+      "status": "spec",
+      "detail": "A grid thumbnail, a preview-sized render, a transcoded playable file and the original — each with its own reference, plus one shared version number and a state of not_applicable, pending, ready or failed.",
+      "why": "Gap G3. Build 17 has one thumbnail field for all four, which is why the graph's 'existing only' filter is literally a check for whether a proxy file is non-null."
+    },
+    {
+      "id": "M2",
+      "area": "content",
+      "label": "Image proxies with EXIF rotation",
+      "status": "rebuild",
+      "detail": "Versioned, so bumping the version rebuilds them all.",
+      "why": "The one proxy path that fully worked in Build 17."
+    },
+    {
+      "id": "M3",
+      "area": "content",
+      "label": "Video proxies",
+      "status": "rebuild",
+      "detail": "Requires ffmpeg on the machine.",
+      "why": "Build 17 falls back to a generic glyph silently when ffmpeg is absent, so a missing dependency looks like a broken file."
+    },
+    {
+      "id": "M4",
+      "area": "content",
+      "label": "Audio waveforms",
+      "status": "spec",
+      "detail": "A rendered waveform standing in for a thumbnail.",
+      "why": "Never built. Audio shows a glyph only."
+    },
+    {
+      "id": "M5",
+      "area": "content",
+      "label": "3D thumbnails",
+      "status": "spec",
+      "detail": "A rendered still for OBJ, FBX, STL and glTF models.",
+      "why": "Never built — 3D was in the original brief and has only ever shown a glyph. FBX is the risky one: timebox it and ship OBJ first if it fights back."
+    },
+    {
+      "id": "M6",
+      "area": "content",
+      "label": "PDF as the paginated type",
+      "status": "spec",
+      "detail": "PDF resolves to preview, full_res, paginate, embed, tag, link, rename, delete and reveal — and not play, with no exception written anywhere.",
+      "why": "The test case for the capability registry. A multi-page TIFF would only need to declare the same conformance to inherit pagination for free."
+    },
+    {
+      "id": "M7",
+      "area": "content",
+      "label": "Remote items actually fetched and cached",
+      "status": "spec",
+      "detail": "A pasted URL becomes an item whose content is fetched, cached and previewed.",
+      "why": "Build 17 can add the item but never fetches or previews it. The content security policy already carries the permission for exactly this."
+    },
+    {
+      "id": "P1",
+      "area": "platform",
+      "label": "Tauri v2 as the application shell",
+      "status": "rebuild",
+      "detail": "Chosen over Electron for small binaries and a fast native backend, and because it targets iOS and Android from the same codebase.",
+      "why": "Binary size matters specifically because of the export-package idea: the exported viewer is a slimmed build of the same app."
+    },
+    {
+      "id": "P2",
+      "area": "platform",
+      "label": "Rust backend",
+      "status": "rebuild",
+      "detail": "All indexing, hashing, proxy generation and database access. Exposed to the interface as named commands.",
+      "why": "Build 17's command layer grew to over eleven hundred lines in one file and became where bugs hid. Split it by domain from the start."
+    },
+    {
+      "id": "P3",
+      "area": "platform",
+      "label": "SQLite via rusqlite, bundled",
+      "status": "carry",
+      "detail": "One file on disk is the single source of truth. Every window reads from it, and any change broadcasts so the others reload.",
+      "why": "That broadcast is what keeps a second window in step without the two sharing any memory."
+    },
+    {
+      "id": "P4",
+      "area": "platform",
+      "label": "React and TypeScript, built with Vite",
+      "status": "rebuild",
+      "detail": "Strict mode on, with unused locals and parameters treated as errors.",
+      "why": "Standard Tauri frontend setup."
+    },
+    {
+      "id": "P5",
+      "area": "platform",
+      "label": "Capability registry as executable code",
+      "status": "carry",
+      "detail": "Twenty-one capabilities. A view asks can(item, 'play') and never asks what type something is. A capability is granted at the highest type where it is always true and inherited downward, then gated by a live check on availability, proxy readiness or item count.",
+      "why": "Gap G15. This means can() answers 'can, right now', which is the answer a button needs. It exists twice — capabilities.ts and capabilities.rs — and those two will drift the moment someone edits one."
+    },
+    {
+      "id": "P6",
+      "area": "platform",
+      "label": "Nine projections as the only read path",
+      "status": "spec",
+      "detail": "p_rows, p_tree, p_board, p_graph, p_note, p_detail, p_health, p_suggest, p_search. A view reaches the data only through one of these, and gets rows already grouped, sorted and flattened.",
+      "why": "The rule behind the whole rebuild: if two views could disagree about something, it belongs in the model rather than in a view. Every recurring bug in Build 17 was two components disagreeing."
+    },
+    {
+      "id": "P7",
+      "area": "platform",
+      "label": "Zustand for interaction state only",
+      "status": "rebuild",
+      "detail": "Selection, active item and transient modes live in memory. Anything that should survive a restart is a database row.",
+      "why": "Drawing that line explicitly is what stops view preferences leaking into memory and disappearing."
+    },
+    {
+      "id": "P8",
+      "area": "platform",
+      "label": "Dockview for panes, native windows for pop-outs",
+      "status": "rebuild",
+      "detail": "Splittable, tabbed, pinnable panes. Popping a pane out opens a real second window rather than a browser pop-up.",
+      "why": "Dockview's own pop-out needs the app served over localhost, which widens the attack surface in a packaged app. A native window keeps the custom protocol, and the two stay in step through the database."
+    },
+    {
+      "id": "P9",
+      "area": "platform",
+      "label": "Supporting Rust crates",
+      "status": "rebuild",
+      "detail": "walkdir for traversal, blake3 for hashing, serde for the boundary, image for proxies, kamadak-exif for orientation, printpdf and qrcode for export. UUID v7 was written by hand rather than adding a crate.",
+      "why": "Two versions of the image crate are currently required because printpdf bundles an older one. That is a compile-time cost only, but it is the kind of thing that bites during an upgrade."
+    },
+    {
+      "id": "P10",
+      "area": "platform",
+      "label": "ffmpeg as an external dependency",
+      "status": "rebuild",
+      "detail": "Needed for video proxies and duration extraction.",
+      "why": "Not bundled. Its absence must be visible rather than silently degrading to a glyph."
+    },
+    {
+      "id": "P11",
+      "area": "platform",
+      "label": "Frontend test coverage",
+      "status": "spec",
+      "detail": "Tests for the classes of bug that kept recurring: portal mounting, drop targets, keyboard handling.",
+      "why": "Every interface bug in Build 17 was found by you rather than by a test. The one part with tests — the pane tree, twenty-three of them — never broke. That is not a coincidence."
+    },
+    {
+      "id": "P12",
+      "area": "platform",
+      "label": "Scale testing before the graph is called done",
+      "status": "spec",
+      "detail": "A synthetic ten-thousand-item library, run against every view.",
+      "why": "The graph has never run above a few hundred nodes and pushes every node away from every other node on every frame, which gets quadratically slower as the library grows. The original plan called for this test before the graph was declared finished, and it never happened."
+    },
+    {
+      "id": "P13",
+      "area": "platform",
+      "label": "Build verification before any status report",
+      "status": "spec",
+      "detail": "cargo test and npm run build both pass before anything is described as working.",
+      "why": "The single biggest process lesson from the rebuild chat. Use Claude Code for the build itself — it can compile and run the tests, which turns every round trip through your machine into an internal loop."
+    },
+    {
+      "id": "D1",
+      "area": "ship",
+      "label": "Native installers on all three desktop platforms",
+      "status": "rebuild",
+      "detail": ".dmg and .app for macOS, .msi and .exe for Windows, .deb and AppImage for Linux, all from Tauri's own bundler.",
+      "why": "macOS builds must be compiled on a Mac. Set up a GitHub Actions workflow with a macOS runner early so distribution is never an afterthought."
+    },
+    {
+      "id": "D2",
+      "area": "ship",
+      "label": "Code signing and notarisation",
+      "status": "spec",
+      "detail": "An unsigned .dmg triggers a Gatekeeper warning that the app is damaged or from an unidentified developer. Distribution-quality builds need an Apple Developer account, around ninety-nine dollars a year.",
+      "why": "For your own use, right-click then Open gets past it. For anyone else, it does not."
+    },
+    {
+      "id": "D3",
+      "area": "ship",
+      "label": "Export packages",
+      "status": "spec",
+      "detail": "Bundle chosen content, its map, tags and notes into a standalone viewer that opens on a machine that has never seen Archiva — and that carries a way to get the full app.",
+      "why": "The headline idea from your very first message, still entirely unstarted. Technically it is a slimmed build of the same app with a database subset and proxies embedded, which is why binary size influenced the Tauri decision."
+    },
+    {
+      "id": "L1",
+      "area": "later",
+      "label": "Remote access and mobile clients",
+      "status": "spec",
+      "detail": "Tauri's iOS and Android targets from the same codebase, plus a local network server. Mobile acts as a viewer and editor for tags and notes; the desktop app keeps doing the indexing and proxy generation.",
+      "why": "Deliberately late. It multiplies the surface area of everything built before it."
+    },
+    {
+      "id": "L2",
+      "area": "later",
+      "label": "Suggestion ladder beyond tier one",
+      "status": "spec",
+      "detail": "Tier 1 — edit distance and tag co-occurrence — is already written and needs no machine learning. Anything above that waits.",
+      "why": "Only real use will tell you which suggestions you actually want, and the edge origin field from G8 has to exist first so a suggestion is never mistaken for something you asserted."
+    },
+    {
+      "id": "L3",
+      "area": "later",
+      "label": "Map level-cycling treatment",
+      "status": "open",
+      "detail": "Animated two-dimensional transitions between the three tiers, or a genuinely layered three-dimensional scene.",
+      "why": "Parked until there is a working graph to judge it against. The three-tier structure gives cycling exactly three clean layers, which strengthens the case for the layered treatment."
+    },
+    {
+      "id": "L4",
+      "area": "later",
+      "label": "Name conflict check",
+      "status": "open",
+      "detail": "Apache Archiva is a well-known open-source repository manager. Different field entirely, but worth a trademark and App Store search before any public release.",
+      "why": "Cheap now, expensive after a launch."
+    }
+  ]
+}
+</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const {items, areas, statuses, meta} = DATA;
+
+/* Order the statuses by how settled each one is. */
+const ORDER = ['carry','rebuild','spec','open'];
+const active = new Set(ORDER);
+let selected = null;
+
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const countBy = (list, key) => list.reduce((m,i)=>(m[i[key]]=(m[i[key]]||0)+1,m),{});
+
+const byStatus = countBy(items, 'status');
+const byArea   = countBy(items, 'area');
+
+/* ---- header line, counted rather than typed ---- */
+document.getElementById('sub').textContent =
+  `${items.length} requirements · ${areas.length} areas · ${ORDER.length} states · compiled ${meta.compiled}`;
+
+/* ---- tally, which doubles as the filter ---- */
+const tally = document.getElementById('tally');
+tally.innerHTML = ORDER.map(s => `
+  <button data-status="${s}" aria-pressed="true">
+    <span class="n">${byStatus[s] || 0}</span>
+    <span class="k"><i class="mk ${s}"></i>${esc(statuses[s].label.split(' — ')[0])}</span>
+  </button>`).join('');
+
+tally.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const s = b.dataset.status;
+  /* Never let the last filter go off — an empty page teaches nothing. */
+  if (active.has(s) && active.size > 1) active.delete(s); else active.add(s);
+  ORDER.forEach(k => tally.querySelector(`[data-status="${k}"]`)
+    .setAttribute('aria-pressed', active.has(k)));
+  render();
+});
+
+/* ---- the list ---- */
+const main = document.getElementById('main');
+
+function render(){
+  main.innerHTML = areas.map(a => {
+    const rows = items.filter(i => i.area === a.id && active.has(i.status));
+    if (!rows.length) return '';
+    return `<section class="area">
+      <h2>${esc(a.label)}<span class="count">${rows.length}/${byArea[a.id]}</span></h2>
+      <p class="blurb">${esc(a.blurb)}</p>
+      <ul>${rows.map(i => `
+        <li><button class="row" data-id="${i.id}" aria-current="${selected===i.id}">
+          <i class="mk ${i.status}"></i>
+          <span class="rid">${i.id}</span>
+          <span class="rlabel">${esc(i.label)}</span>
+        </button></li>`).join('')}</ul>
+    </section>`;
+  }).join('');
+}
+
+main.addEventListener('click', e => {
+  const b = e.target.closest('.row'); if (!b) return;
+  selected = (selected === b.dataset.id) ? null : b.dataset.id;
+  render(); detail();
+});
+
+/* ---- the panel ---- */
+const side = document.getElementById('side');
+
+function detail(){
+  if (!selected){
+    const heaviest = ORDER.map(s => [s, byStatus[s]||0]).sort((a,b)=>b[1]-a[1])[0];
+    side.innerHTML = `<div class="empty">
+      <b>How to read this</b>
+      <ol>
+        ${ORDER.map(s => `<li>${esc(statuses[s].label)} — ${byStatus[s]||0}</li>`).join('')}
+      </ol>
+      <p style="margin:14px 0 0">The largest group is “${esc(statuses[heaviest[0]].label.split(' — ')[0].toLowerCase())}”, at ${heaviest[1]} of ${items.length}.</p>
+    </div>`;
+    return;
+  }
+  const i = items.find(x => x.id === selected);
+  side.innerHTML = `
+    <p class="d-id">${i.id} · ${esc(areas.find(a=>a.id===i.area).label)}</p>
+    <h2 class="d-title">${esc(i.label)}</h2>
+    <p class="d-status"><i class="mk ${i.status}"></i>${esc(statuses[i.status].label)}</p>
+    <p class="d-h">What it is</p>
+    <p class="d-body">${esc(i.detail)}</p>
+    <p class="d-h">Why it is on the list</p>
+    <p class="d-body">${esc(i.why)}</p>
+    <p class="d-note">${esc(statuses[i.status].note)}</p>`;
+}
+
+/* ---- footer, also counted ---- */
+document.getElementById('foot').innerHTML =
+  `<p>Compiled from: ${meta.sources.map(esc).join(' · ')}</p>
+   <p>${byStatus.carry} of ${items.length} requirements are already written and tested. ${byStatus.rebuild} are proven behaviour awaiting reimplementation, ${byStatus.spec} are specified but unbuilt, and ${byStatus.open} are waiting on a decision from you.</p>`;
+
+render(); detail();
+</script>
+</body>
+</html>

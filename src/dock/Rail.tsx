@@ -24,14 +24,19 @@ const DESTINATIONS: Destination[] = [
   { kind: null, label: "Compass", glyph: "✛" },
 ];
 
+/** The panels that hang off the rail rather than docking. Both manage
+ * something the library has one of — the watched folders, the vocabulary — so
+ * neither is a view and neither gets a pane. */
+export type Flyout = "sources" | "tags";
+
 type Props = {
   activeKind: PanelKind | null;
-  sourcesOpen: boolean;
+  flyout: Flyout | null;
   onOpen: (kind: PanelKind, title: string) => void;
-  onToggleSources: () => void;
+  onToggleFlyout: (which: Flyout) => void;
 };
 
-export function Rail({ activeKind, sourcesOpen, onOpen, onToggleSources }: Props) {
+export function Rail({ activeKind, flyout, onOpen, onToggleFlyout }: Props) {
   return (
     <nav className="rail" aria-label="Views">
       <span className="rail-mark" title="Archiva">
@@ -50,12 +55,22 @@ export function Rail({ activeKind, sourcesOpen, onOpen, onToggleSources }: Props
       ))}
       <div className="rail-spacer" />
       <button
-        className={"rail-btn" + (sourcesOpen ? " on" : "")}
+        className={"rail-btn" + (flyout === "tags" ? " on" : "")}
+        title="Tags — the vocabulary"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleFlyout("tags");
+        }}
+      >
+        ⌗
+      </button>
+      <button
+        className={"rail-btn" + (flyout === "sources" ? " on" : "")}
         title="Sources — watched folders"
         onClick={(e) => {
           // The shell closes the flyout on any click; this one opened it.
           e.stopPropagation();
-          onToggleSources();
+          onToggleFlyout("sources");
         }}
       >
         ⌸

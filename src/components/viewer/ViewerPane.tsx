@@ -52,7 +52,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
   const rowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const typeAheadRef = useRef<{ buffer: string; at: number }>({ buffer: "", at: 0 });
   const slot = useTaskbarSlot();
-  const { setActive } = useActiveItem();
+  const { setActive, setSelection: publishSelection } = useActiveItem();
 
   const prefsScope = scopeId ?? "viewer:root";
 
@@ -162,6 +162,15 @@ export function ViewerPane({ scopeId, isActive }: Props) {
     (id: string | null) => setActive(id, order),
     [setActive, order],
   );
+
+  // Tagging applies to a selection, not to the focused row alone (C2), and
+  // the Inspector has no other way to know what this pane has selected.
+  // Column mode selects exactly one row per column, so there is nothing to
+  // publish beyond the active item, which `setActive` already covers.
+  useEffect(() => {
+    if (layout === "column") return;
+    publishSelection(order.filter((id) => Sel.isSelected(selection, id)));
+  }, [layout, selection, order, publishSelection]);
 
   function announceOpen(node: Row | ListRow) {
     const target = openTarget(node);
