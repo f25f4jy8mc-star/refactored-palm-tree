@@ -140,6 +140,10 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         descending,
         expanded,
         query: null,
+        // A list has disclosure triangles, so it is a tree: the root is what
+        // nothing contains, and a folder's contents appear only when it is
+        // open. A grid is "everything I have", flat.
+        tree: layout === "list",
       });
       setRows(page.rows);
       setTotal(page.total);
@@ -148,7 +152,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [groupBy, sort, descending, expanded]);
+  }, [groupBy, sort, descending, expanded, layout]);
 
   useEffect(() => {
     if (!searching && prefsLoaded) refresh();
@@ -285,11 +289,52 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     switch (e.key) {
       case "ArrowDown":
       case "ArrowUp":
-      case "ArrowLeft":
-      case "ArrowRight": {
-        // A list is one-dimensional: ←/→ do nothing there, same as build17.
-        if (cols === 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      case "ArrowRight":
+      case "ArrowLeft": {
+        // In a tree, ←/→ open and close rather than move sideways: → opens a
+        // shut folder and then steps into it, ← closes an open one and
+        // otherwise steps out to its parent. Finder's behaviour, and the
+        // reason a list needs no horizontal movement of its own.
+        //
+        // Only the horizontal pair. ↑/↓ still walk the rows, and folding them
+        // into this branch is exactly how they stopped working.
+        const horizontal = e.key === "ArrowLeft" || e.key === "ArrowRight";
+        if (cols === 1 && horizontal) {
           e.preventDefault();
+          const key = selection.cursor;
+          if (!key) return;
+          const at = visibleKeys.indexOf(key);
+          const row = at === -1 ? undefined : visibleRows[at];
+          if (!row) return;
+          const open = expanded.includes(row.id);
+          const canOpen = row.node_type === "collector" && row.child_count > 0;
+
+          if (e.key === "ArrowRight") {
+            if (canOpen && !open) toggleExpanded(row.id);
+            else if (canOpen && open) {
+              // Already open: step to the first child, which is the row
+              // immediately below and one level deeper.
+              const child = visibleKeys[at + 1];
+              if (child && visibleRows[at + 1]?.depth === row.depth + 1) {
+                setSelection(Sel.click(child));
+                landOn(child);
+                publish(child);
+              }
+            }
+            return;
+          }
+          if (canOpen && open) {
+            toggleExpanded(row.id);
+            return;
+          }
+          // Not an open folder: go out to whatever holds this row. The
+          // placement key names the parent, so no search is needed.
+          const parentKey = key.includes(">") ? key.slice(0, key.lastIndexOf(">")) : null;
+          if (parentKey) {
+            setSelection(Sel.click(parentKey));
+            landOn(parentKey);
+            publish(parentKey);
+          }
           return;
         }
         e.preventDefault();

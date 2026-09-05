@@ -54,6 +54,11 @@ export interface ListOptions {
   descending: boolean;
   expanded: string[];
   query: string | null;
+  /** Ask for the tree shape: the root is what nothing contains, and an
+   * expanded collector's members nest beneath it however deep they go. A grid
+   * wants the flat listing — everything at once — and a list with disclosure
+   * triangles wants this. */
+  tree?: boolean;
 }
 
 /** `p_detail`'s node shape — also what a search `Hit` carries (§3, `Row`). */

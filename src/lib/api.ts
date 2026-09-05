@@ -28,6 +28,7 @@ export function listRows(opts: ListOptions): Promise<ListPage> {
       descending: opts.descending,
       expanded: opts.expanded,
       query: opts.query,
+      tree: opts.tree ?? false,
     },
   });
 }

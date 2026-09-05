@@ -36,7 +36,9 @@ function Shell() {
           <LibraryView
             mode="library"
             isActive={isActive}
-            onOpenCollector={(id, title) => dockRef.current?.open("viewer", title, id)}
+            // Always a new Viewer. Reusing an open one meant a folder you
+            // had left on screen was replaced by the one you just opened.
+            onOpenCollector={(id, title) => dockRef.current?.open("viewer", title, id, true)}
           />
         );
       case "scattered":
@@ -44,7 +46,9 @@ function Shell() {
           <LibraryView
             mode="scattered"
             isActive={isActive}
-            onOpenCollector={(id, title) => dockRef.current?.open("viewer", title, id)}
+            // Always a new Viewer. Reusing an open one meant a folder you
+            // had left on screen was replaced by the one you just opened.
+            onOpenCollector={(id, title) => dockRef.current?.open("viewer", title, id, true)}
           />
         );
       case "viewer":

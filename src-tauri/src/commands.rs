@@ -19,6 +19,7 @@ use crate::model::health;
 use crate::model::identity::{self, Recheck};
 use crate::model::projections::{self, Detail, ListOptions, ListPage};
 use crate::model::record::{self, Record};
+use crate::model::rowtree;
 use crate::model::removal::{self, Preview, Removal};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
@@ -54,6 +55,12 @@ pub struct ListRowsArgs {
     pub expanded: Vec<String>,
     #[serde(default)]
     pub query: Option<String>,
+    /// Ask for the tree shape rather than the flat listing: the root is what
+    /// nothing contains, and an expanded collector's members are nested
+    /// beneath it however deep they go. A grid wants the flat listing; a list
+    /// with disclosure triangles wants this.
+    #[serde(default)]
+    pub tree: bool,
 }
 
 impl From<ListRowsArgs> for ListOptions {
@@ -72,7 +79,13 @@ impl From<ListRowsArgs> for ListOptions {
 #[tauri::command]
 pub fn list_rows(db: State<Db>, args: ListRowsArgs) -> Result<ListPage, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    projections::rows(&conn, &args.into()).map_err(|e| e.to_string())
+    let tree = args.tree;
+    let opts: ListOptions = args.into();
+    if tree {
+        rowtree::rows(&conn, &opts).map_err(|e| e.to_string())
+    } else {
+        projections::rows(&conn, &opts).map_err(|e| e.to_string())
+    }
 }
 
 /// `model::scan::ScanReport` carries no `Serialize` impl — the model crate is

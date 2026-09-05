@@ -33,8 +33,12 @@ export type DockHandle = {
    *     view switcher is for — you ask for a Library and you get one, rather
    *     than being thrown to a Library that already exists somewhere in the
    *     layout;
-   *   * **opening a collector** retargets the Viewer that is already open,
-   *     so double-clicking through folders doesn't pile up tabs. */
+   *   * **opening a collector** does too, so a folder you left on screen is
+   *     never replaced by the one you just opened.
+   *
+   * Retargeting is what remains for a caller that genuinely means "show this
+   * here" — nothing does today, and the path is kept because the moment
+   * something wants it, wanting it will be the whole point. */
   open: (kind: PanelKind, title: string, scopeId?: string, fresh?: boolean) => void;
   /** Close the active panel. */
   closeActive: () => void;
