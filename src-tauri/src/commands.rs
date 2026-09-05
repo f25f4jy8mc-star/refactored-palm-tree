@@ -19,6 +19,7 @@ use crate::model::health;
 use crate::model::identity::{self, Recheck};
 use crate::model::projections::{self, Detail, ListOptions, ListPage};
 use crate::model::record::{self, Record};
+use crate::model::folders;
 use crate::model::rowtree;
 use crate::model::removal::{self, Preview, Removal};
 use crate::model::scan;
@@ -36,6 +37,9 @@ fn default_group_by() -> String {
 }
 fn default_sort() -> String {
     "name".into()
+}
+fn default_shape() -> String {
+    "source".into()
 }
 
 /// Mirrors `model::projections::ListOptions`, field for field, so the model
@@ -55,12 +59,12 @@ pub struct ListRowsArgs {
     pub expanded: Vec<String>,
     #[serde(default)]
     pub query: Option<String>,
-    /// Ask for the tree shape rather than the flat listing: the root is what
-    /// nothing contains, and an expanded collector's members are nested
-    /// beneath it however deep they go. A grid wants the flat listing; a list
-    /// with disclosure triangles wants this.
-    #[serde(default)]
-    pub tree: bool,
+    /// `source` — every item once, folders left out. `hierarchy` — the tree,
+    /// rooted at what nothing contains, nesting an expanded folder's members
+    /// however deep they go. Two ways of reading one library, and the pane
+    /// says which it wants rather than each guessing.
+    #[serde(default = "default_shape")]
+    pub shape: String,
 }
 
 impl From<ListRowsArgs> for ListOptions {
@@ -79,13 +83,13 @@ impl From<ListRowsArgs> for ListOptions {
 #[tauri::command]
 pub fn list_rows(db: State<Db>, args: ListRowsArgs) -> Result<ListPage, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let tree = args.tree;
+    let shape = args.shape.clone();
     let opts: ListOptions = args.into();
-    if tree {
-        rowtree::rows(&conn, &opts).map_err(|e| e.to_string())
-    } else {
-        projections::rows(&conn, &opts).map_err(|e| e.to_string())
+    match shape.as_str() {
+        "hierarchy" => rowtree::hierarchy(&conn, &opts),
+        _ => rowtree::source(&conn, &opts),
     }
+    .map_err(|e| e.to_string())
 }
 
 /// `model::scan::ScanReport` carries no `Serialize` impl — the model crate is
@@ -205,11 +209,16 @@ pub fn remove_source(
             )
             .map_err(|e| e.to_string())?;
         sources::remove(&conn, &id).map_err(|e| e.to_string())?;
-        if forget_items {
+        let forgotten = if forget_items {
             removal::forget_under(&conn, &path).map_err(|e| e.to_string())?
         } else {
             0
-        }
+        };
+        // Folders that held only what just went are structure describing
+        // nothing, so they go too.
+        let roots = sources::enabled_roots(&conn).map_err(|e| e.to_string())?;
+        folders::rebuild(&conn, &roots).map_err(|e| e.to_string())?;
+        forgotten
     };
     let _ = app.emit("archiva:changed", ());
     Ok(forgotten)
@@ -255,6 +264,12 @@ pub fn rescan(app: AppHandle, db: State<Db>) -> Result<ScanReportDto, String> {
         let report =
             scan::scan(&mut conn, &roots, &exclude, &extractor).map_err(|e| e.to_string())?;
         sources::mark_scanned(&conn).map_err(|e| e.to_string())?;
+        // The scan records where each file is but creates nothing to stand
+        // for the folders themselves, so the hierarchy is built here from
+        // what it wrote. Without this the library is a flat pile and every
+        // hierarchy surface — the tree, Miller columns, opening a collector —
+        // has nothing to show.
+        folders::rebuild(&conn, &roots).map_err(|e| e.to_string())?;
         // The scan can only say present or missing. This is where missing is
         // refined into permission_denied, and where a drive plugged back in
         // stops being badged (G1).

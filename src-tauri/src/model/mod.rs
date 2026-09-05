@@ -21,6 +21,7 @@ pub mod capabilities;
 pub mod content_type;
 pub mod extract;
 pub mod facets;
+pub mod folders;
 pub mod health;
 pub mod identity;
 pub mod mutations;

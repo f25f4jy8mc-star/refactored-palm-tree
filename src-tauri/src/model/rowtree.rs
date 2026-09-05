@@ -35,7 +35,33 @@ use super::projections::{self, ListOptions, ListPage, ListRow};
 /// backstop for a chain that is merely absurd.
 const MAX_DEPTH: i64 = 24;
 
-pub fn rows(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
+/// Every item, once, with the folder structure left out.
+///
+/// The folders are structure rather than content — they say where things are,
+/// not what you have — so a listing of what you have does not repeat them.
+/// Collectors you made by hand stay: those are gatherings, and a gathering is
+/// something you have.
+pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
+    let page = projections::rows(conn, &flat(opts, opts.scope.clone()))?;
+    let derived = super::folders::derived_ids(conn)?;
+    let mut rows: Vec<ListRow> = page
+        .rows
+        .into_iter()
+        .filter(|r| !derived.contains(&r.id))
+        .collect();
+    for (i, row) in rows.iter_mut().enumerate() {
+        row.depth = 0;
+        row.ordinal = i as i64;
+    }
+    Ok(ListPage {
+        total: rows.len(),
+        rows,
+        group_by: page.group_by,
+        sort: page.sort,
+    })
+}
+
+pub fn hierarchy(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     // The projection does the listing. `expanded` is cleared because the
     // inlining it does is exactly what this module is replacing.
     let base = projections::rows(conn, &flat(opts, opts.scope.clone()))?;
@@ -195,6 +221,114 @@ mod tests {
             .collect()
     }
 
+    /// Writes the exact rows the real backend produces for a real scanned
+    /// directory tree, so the interface walkthrough can be driven by what the
+    /// Rust actually returns instead of a shape someone hand-wrote.
+    ///
+    /// This exists because a hand-written stub let a broken build pass: the
+    /// harness answered with the tree it was told to, the backend answered
+    /// with something else, and nothing compared the two. Run with
+    /// ARCHIVA_FIXTURE=<path>.
+    #[test]
+    fn emit_fixture_for_the_interface_walkthrough() {
+        use crate::model::{folders, scan};
+        use std::time::{Duration, SystemTime};
+
+        let Ok(out) = std::env::var("ARCHIVA_FIXTURE") else {
+            return;
+        };
+
+        struct Bare;
+        impl scan::Extractor for Bare {
+            fn extract(&self, _p: &std::path::Path, _ct: &str) -> Vec<(String, Option<String>, Option<f64>)> {
+                vec![]
+            }
+            fn version(&self) -> i64 {
+                1
+            }
+            fn proxies(&self, _p: &std::path::Path, _ct: &str, _h: Option<&str>) -> scan::Proxies {
+                scan::Proxies::not_applicable(1)
+            }
+        }
+
+        let dir = std::env::temp_dir().join("archiva-fixture-tree");
+        std::fs::remove_dir_all(&dir).ok();
+        for (rel, bytes) in [
+            ("alpha.jpg", &b"a"[..]),
+            ("zulu.jpg", &b"z"[..]),
+            ("Trips/photo.jpg", &b"p"[..]),
+            ("Trips/Bergamo/deep.jpg", &b"d"[..]),
+        ] {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(60)).unwrap();
+        }
+
+        let mut c = Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "foreign_keys", "ON").unwrap();
+        c.execute_batch(include_str!("../../migrations_model/001_model.sql")).unwrap();
+        scan::scan(&mut c, &[dir.clone()], &[], &Bare).unwrap();
+        folders::rebuild(&c, &[dir.clone()]).unwrap();
+        crate::model::health::recompute_all(&c).unwrap();
+
+        let id_of = |name: &str| -> String {
+            c.query_row(
+                "SELECT id FROM node WHERE display_name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("no node called {name}: {e}"))
+        };
+        let root_name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let ids = serde_json::json!({
+            "root": id_of(&root_name),
+            "trips": id_of("Trips"),
+            "bergamo": id_of("Bergamo"),
+            "alpha": id_of("alpha"),
+            "zulu": id_of("zulu"),
+            "photo": id_of("photo"),
+            "deep": id_of("deep"),
+        });
+
+        let base = |expanded: Vec<String>| ListOptions {
+            scope: None,
+            group_by: "none".into(),
+            sort: "name".into(),
+            descending: false,
+            expanded,
+            query: None,
+        };
+        // Every open-set the walkthrough can reach, since only one branch is
+        // ever open at a time.
+        let spines: Vec<Vec<String>> = vec![
+            vec![],
+            vec![id_of(&root_name)],
+            vec![id_of(&root_name), id_of("Trips")],
+            vec![id_of(&root_name), id_of("Trips"), id_of("Bergamo")],
+        ];
+        let mut hierarchy = serde_json::Map::new();
+        for spine in spines {
+            let key = spine.join(",");
+            hierarchy.insert(key, serde_json::to_value(hierarchy_page(&c, &base(spine))).unwrap());
+        }
+
+        let fixture = serde_json::json!({
+            "rootName": root_name,
+            "ids": ids,
+            "source": serde_json::to_value(source(&c, &base(vec![])).unwrap()).unwrap(),
+            "hierarchy": hierarchy,
+        });
+        std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        eprintln!("fixture written to {out}");
+    }
+
+    fn hierarchy_page(c: &Connection, o: &ListOptions) -> ListPage {
+        hierarchy(c, o).unwrap()
+    }
+
     #[test]
     fn the_root_holds_only_what_nothing_contains() {
         let c = db();
@@ -203,7 +337,7 @@ mod tests {
         item(&c, "p", "photo.jpg");
         contains(&c, "p", "f1");
 
-        let page = rows(&c, &opts(&[])).unwrap();
+        let page = hierarchy(&c, &opts(&[])).unwrap();
         // Sorted by name, so alpha comes before Trips.
         assert_eq!(
             shape(&page),
@@ -223,7 +357,7 @@ mod tests {
         item(&c, "p", "photo.jpg");
         contains(&c, "p", "f1");
 
-        let open = rows(&c, &opts(&["f1"])).unwrap();
+        let open = hierarchy(&c, &opts(&["f1"])).unwrap();
         assert_eq!(
             shape(&open),
             vec![
@@ -239,7 +373,7 @@ mod tests {
             "once, not twice"
         );
 
-        let shut = rows(&c, &opts(&[])).unwrap();
+        let shut = hierarchy(&c, &opts(&[])).unwrap();
         assert_eq!(shut.rows.len(), 2, "collapsing really removes them");
     }
 
@@ -253,7 +387,7 @@ mod tests {
         contains(&c, "f2", "f1");
         contains(&c, "p", "f2");
 
-        let page = rows(&c, &opts(&["f1", "f2"])).unwrap();
+        let page = hierarchy(&c, &opts(&["f1", "f2"])).unwrap();
         assert_eq!(
             shape(&page),
             vec![
@@ -273,7 +407,7 @@ mod tests {
         contains(&c, "f2", "f1");
         contains(&c, "p", "f2");
 
-        let page = rows(&c, &opts(&["f2"])).unwrap();
+        let page = hierarchy(&c, &opts(&["f2"])).unwrap();
         assert_eq!(shape(&page), vec![("Trips".into(), 0)]);
     }
 
@@ -288,7 +422,7 @@ mod tests {
         contains(&c, "p", "f1");
         contains(&c, "p", "f2");
 
-        let page = rows(&c, &opts(&["f1", "f2"])).unwrap();
+        let page = hierarchy(&c, &opts(&["f1", "f2"])).unwrap();
         assert_eq!(
             shape(&page),
             vec![
@@ -308,7 +442,7 @@ mod tests {
         contains(&c, "f2", "f1");
         contains(&c, "f1", "f2"); // a loop
 
-        let page = rows(&c, &opts(&["f1", "f2"])).unwrap();
+        let page = hierarchy(&c, &opts(&["f1", "f2"])).unwrap();
         // Nothing is uncontained, so nothing is a root — but the important
         // part is that it terminates.
         assert!(page.rows.len() < 10, "{:?}", shape(&page));
@@ -326,7 +460,7 @@ mod tests {
 
         let mut o = opts(&["f2"]);
         o.scope = Some("f1".into());
-        let page = rows(&c, &o).unwrap();
+        let page = hierarchy(&c, &o).unwrap();
         assert_eq!(
             shape(&page),
             vec![("Bergamo".into(), 0), ("photo.jpg".into(), 1)],
@@ -343,7 +477,7 @@ mod tests {
 
         let mut o = opts(&["f1"]);
         o.group_by = "type".into();
-        let page = rows(&c, &o).unwrap();
+        let page = hierarchy(&c, &o).unwrap();
         let groups: Vec<&String> = page.rows.iter().map(|r| &r.group_key).collect();
         assert_eq!(
             groups[0], groups[1],
@@ -358,7 +492,7 @@ mod tests {
         item(&c, "a", "alpha.jpg");
         item(&c, "p", "photo.jpg");
         contains(&c, "p", "f1");
-        let page = rows(&c, &opts(&["f1"])).unwrap();
+        let page = hierarchy(&c, &opts(&["f1"])).unwrap();
         let ordinals: Vec<i64> = page.rows.iter().map(|r| r.ordinal).collect();
         assert_eq!(ordinals, vec![0, 1, 2]);
         assert_eq!(page.total, 3);

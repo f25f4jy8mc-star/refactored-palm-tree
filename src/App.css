@@ -1576,3 +1576,19 @@ body {
 .flyout-danger .hint {
   margin: 0 0 8px;
 }
+
+/* A segmented control: two readings of one library, side by side. */
+.seg {
+  display: inline-flex;
+}
+.seg .btn {
+  border-radius: 0;
+  margin: 0;
+}
+.seg .btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+.seg .btn:last-child {
+  border-radius: 0 4px 4px 0;
+  margin-left: -1px;
+}

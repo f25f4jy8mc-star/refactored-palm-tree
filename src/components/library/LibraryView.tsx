@@ -5,9 +5,10 @@ import { addSource, getViewPrefs, listRows, pickFolder, searchLibrary, setViewPr
 import { openTarget } from "../../lib/capabilities";
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
+import * as Expand from "../../lib/expansion";
 import { nodeIdOf, nodeIdsOf, placementKeys } from "../../lib/placement";
 import * as Sel from "../../lib/selection";
-import type { GroupBy, Hit, ListRow, Row, SortBy } from "../../lib/types";
+import type { GroupBy, Hit, ListRow, Row, Shape, SortBy } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "./Thumbnail";
 
@@ -96,6 +97,10 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [expanded, setExpanded] = useState<string[]>([]);
+  // Two ways of reading the library, and the reason both exist: Source is
+  // every item once — what you have — and Hierarchy is where those items sit.
+  // Trying to be both at once is what put an item in the list twice.
+  const [shape, setShape] = useState<Shape>("source");
   const [selection, setSelection] = useState<Sel.SelectionState>(Sel.EMPTY_SELECTION);
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -115,6 +120,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         if (p.layout === "list" || p.layout === "grid") setLayout(p.layout);
         if (p.sort) setSort(p.sort as SortBy);
         if (mode === "library" && p.group_by) setGroupBy(p.group_by as GroupBy);
+        if (p.shape === "source" || p.shape === "hierarchy") setShape(p.shape);
       })
       .finally(() => setPrefsLoaded(true));
   }, [prefsScope, mode]);
@@ -126,8 +132,9 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       sort,
       group_by: mode === "library" ? groupBy : null,
       density: null,
+      shape,
     });
-  }, [prefsLoaded, prefsScope, mode, layout, sort, groupBy]);
+  }, [prefsLoaded, prefsScope, mode, layout, sort, groupBy, shape]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -140,10 +147,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         descending,
         expanded,
         query: null,
-        // A list has disclosure triangles, so it is a tree: the root is what
-        // nothing contains, and a folder's contents appear only when it is
-        // open. A grid is "everything I have", flat.
-        tree: layout === "list",
+        shape,
       });
       setRows(page.rows);
       setTotal(page.total);
@@ -152,7 +156,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [groupBy, sort, descending, expanded, layout]);
+  }, [groupBy, sort, descending, expanded, shape]);
 
   useEffect(() => {
     if (!searching && prefsLoaded) refresh();
@@ -180,6 +184,10 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     };
   }, [searching, trimmedQuery]);
 
+  // A tree drawn as a grid of tiles has nowhere to put depth, so Hierarchy
+  // is always a list. Source is either.
+  const effectiveLayout: Layout = shape === "hierarchy" ? "list" : layout;
+
   const visibleRows = useMemo(
     () => (kindFilter ? rows.filter((r) => r.icon_kind === kindFilter || r.node_type === kindFilter) : rows),
     [rows, kindFilter],
@@ -203,8 +211,12 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     return m;
   }, [searching, hits, visibleRows, visibleKeys]);
 
-  function toggleExpanded(id: string) {
-    setExpanded((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  /** Open or close a folder. Only one branch is open at a time — the spine
+   * from the root down to whatever you last opened — so the list stays short
+   * and every visible row's parentage is obvious. The placement key already
+   * carries that spine, so opening is not a search. */
+  function toggleExpanded(key: string) {
+    setExpanded((prev) => Expand.toggle(prev, key));
   }
 
   function announceOpen(node: Row | ListRow) {
@@ -216,7 +228,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     );
   }
 
-  function openRow(row: ListRow) {
+  function openRow(row: ListRow, key: string) {
     // A collector opens in the Viewer, where it can be read as icons, a
     // list or columns. The disclosure triangle still expands it in place —
     // two different questions ("show me inside this, here" vs "take me
@@ -226,7 +238,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       return;
     }
     if (row.node_type === "collector") {
-      toggleExpanded(row.id);
+      toggleExpanded(key);
       return;
     }
     announceOpen(row);
@@ -263,7 +275,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
    * drift from what's actually on screen as the window resizes. List mode
    * is a single column, so ↑/↓ there is just ±1 and ←/→ is a no-op. */
   function columns(): number {
-    if (layout !== "grid" || searching) return 1;
+    if (effectiveLayout !== "grid" || searching) return 1;
     const el = listRef.current;
     if (!el) return 1;
     return Math.max(1, getComputedStyle(el).gridTemplateColumns.split(" ").length);
@@ -282,7 +294,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     // ⌘1/⌘2 switch layout, matching Finder/build17's view-mode shortcuts.
     if ((e.metaKey || e.ctrlKey) && (e.key === "1" || e.key === "2")) {
       e.preventDefault();
-      setLayout(e.key === "1" ? "grid" : "list");
+      if (shape === "source") setLayout(e.key === "1" ? "grid" : "list");
       return;
     }
     const cols = columns();
@@ -310,7 +322,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
           const canOpen = row.node_type === "collector" && row.child_count > 0;
 
           if (e.key === "ArrowRight") {
-            if (canOpen && !open) toggleExpanded(row.id);
+            if (canOpen && !open) toggleExpanded(key);
             else if (canOpen && open) {
               // Already open: step to the first child, which is the row
               // immediately below and one level deeper.
@@ -324,7 +336,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
             return;
           }
           if (canOpen && open) {
-            toggleExpanded(row.id);
+            toggleExpanded(key);
             return;
           }
           // Not an open folder: go out to whatever holds this row. The
@@ -382,7 +394,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
           // the cursor actually is.
           const at = visibleKeys.indexOf(selection.cursor ?? "");
           const row = at === -1 ? rows.find((r) => r.id === id) : visibleRows[at];
-          if (row) openRow(row);
+          if (row && selection.cursor) openRow(row, selection.cursor);
         }
         return;
       }
@@ -448,6 +460,33 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         ))}
       </select>
       {mode === "library" && (
+        <span className="seg" role="group" aria-label="How to read the library">
+          {(["source", "hierarchy"] as Shape[]).map((v) => (
+            <button
+              key={v}
+              className={"btn" + (shape === v ? " on" : "")}
+              title={
+                v === "source"
+                  ? "Source — every item once, folders left out"
+                  : "Hierarchy — the folder tree, one branch open at a time"
+              }
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setShape(v);
+                // Leaving a tree with a branch open would come back to a
+                // half-open tree that no longer matches anything on screen.
+                setExpanded([]);
+                setSelection(Sel.clear());
+                listRef.current?.focus();
+              }}
+              disabled={searching}
+            >
+              {v === "source" ? "Source" : "Hierarchy"}
+            </button>
+          ))}
+        </span>
+      )}
+      {mode === "library" && shape === "source" && (
         <select
           value={groupBy}
           onChange={(e) => {
@@ -491,7 +530,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       </button>
       <span className="taskbar-divider" />
       <button
-        className={"btn" + (layout === "list" ? " on" : "")}
+        className={"btn" + (effectiveLayout === "list" ? " on" : "")}
         title="List"
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setLayout("list")}
@@ -499,10 +538,15 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         ☰
       </button>
       <button
-        className={"btn" + (layout === "grid" ? " on" : "")}
-        title="Grid"
+        className={"btn" + (effectiveLayout === "grid" ? " on" : "")}
+        title={
+          shape === "hierarchy"
+            ? "A tree of tiles has nowhere to put depth — Hierarchy is always a list"
+            : "Grid"
+        }
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setLayout("grid")}
+        disabled={shape === "hierarchy"}
       >
         ▦
       </button>
@@ -608,7 +652,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         </div>
       ) : (
         <div
-          className={`library ${layout}`}
+          className={`library ${effectiveLayout}`}
           ref={listRef}
           tabIndex={0}
           onKeyDown={onKeyDown}
@@ -625,21 +669,21 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
                   else rowRefs.current.delete(key);
                 }}
                 className={`row${isSelected ? " selected" : ""}`}
-                style={layout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
+                style={effectiveLayout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
                 onClick={(e) => onRowClick(e, key)}
-                onDoubleClick={() => openRow(row)}
+                onDoubleClick={() => openRow(row, key)}
               >
-                {layout === "list" &&
+                {effectiveLayout === "list" &&
                   (row.node_type === "collector" && row.child_count > 0 ? (
                     <button
                       className="disclosure"
                       onClick={(e) => {
                         e.stopPropagation();
-                        toggleExpanded(row.id);
+                        toggleExpanded(key);
                       }}
-                      aria-label={expanded.includes(row.id) ? "Collapse" : "Expand"}
+                      aria-label={Expand.isOpen(expanded, row.id) ? "Collapse" : "Expand"}
                     >
-                      {expanded.includes(row.id) ? "▾" : "▸"}
+                      {Expand.isOpen(expanded, row.id) ? "▾" : "▸"}
                     </button>
                   ) : (
                     <span className="indent" style={{ width: 16 }} />
@@ -649,17 +693,17 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
                 </span>
                 <span className="names">
                   <span className="row-name">{row.display_name}</span>
-                  {layout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
+                  {effectiveLayout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
                 </span>
-                {layout === "list" && row.availability !== "present" && (
+                {effectiveLayout === "list" && row.availability !== "present" && (
                   <span className="badge missing">{row.availability.replace("_", " ")}</span>
                 )}
-                {layout === "list" && row.health_missing.length > 0 && (
+                {effectiveLayout === "list" && row.health_missing.length > 0 && (
                   <span className="badge" title={row.health_missing.join(", ")}>
                     {row.health_missing[0]}
                   </span>
                 )}
-                {layout === "list" && row.size_bytes ? (
+                {effectiveLayout === "list" && row.size_bytes ? (
                   <span className="row-sub">{formatSize(row.size_bytes)}</span>
                 ) : null}
               </div>

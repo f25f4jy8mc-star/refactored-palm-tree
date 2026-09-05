@@ -18,6 +18,7 @@ use rusqlite::Connection;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations_model/001_model.sql"),
     include_str!("../migrations_model/002_sources.sql"),
+    include_str!("../migrations_model/003_view_shape.sql"),
 ];
 
 pub fn open(db_path: &Path) -> anyhow::Result<Connection> {

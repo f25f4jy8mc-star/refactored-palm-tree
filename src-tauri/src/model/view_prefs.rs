@@ -16,12 +16,14 @@ pub struct ViewPrefs {
     pub sort: Option<String>,
     pub group_by: Option<String>,
     pub density: Option<String>,
+    /// `source` or `hierarchy` — which way the Library is being read.
+    pub shape: Option<String>,
 }
 
 pub fn get(conn: &Connection, scope_id: &str, pane_kind: &str) -> Result<ViewPrefs> {
     Ok(conn
         .query_row(
-            "SELECT layout, sort, group_by, density FROM view_prefs
+            "SELECT layout, sort, group_by, density, shape FROM view_prefs
               WHERE scope_id = ?1 AND pane_kind = ?2",
             params![scope_id, pane_kind],
             |r| {
@@ -30,6 +32,7 @@ pub fn get(conn: &Connection, scope_id: &str, pane_kind: &str) -> Result<ViewPre
                     sort: r.get(1)?,
                     group_by: r.get(2)?,
                     density: r.get(3)?,
+                    shape: r.get(4)?,
                 })
             },
         )
@@ -39,10 +42,11 @@ pub fn get(conn: &Connection, scope_id: &str, pane_kind: &str) -> Result<ViewPre
 
 pub fn set(conn: &Connection, scope_id: &str, pane_kind: &str, prefs: &ViewPrefs) -> Result<()> {
     conn.execute(
-        "INSERT INTO view_prefs(scope_id, pane_kind, layout, sort, group_by, density, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "INSERT INTO view_prefs(scope_id, pane_kind, layout, sort, group_by, density, shape, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
          ON CONFLICT(scope_id, pane_kind) DO UPDATE SET
-           layout = ?3, sort = ?4, group_by = ?5, density = ?6, updated_at = datetime('now')",
+           layout = ?3, sort = ?4, group_by = ?5, density = ?6, shape = ?7,
+           updated_at = datetime('now')",
         params![
             scope_id,
             pane_kind,
@@ -50,6 +54,7 @@ pub fn set(conn: &Connection, scope_id: &str, pane_kind: &str, prefs: &ViewPrefs
             prefs.sort,
             prefs.group_by,
             prefs.density,
+            prefs.shape,
         ],
     )?;
     Ok(())
@@ -62,6 +67,8 @@ mod tests {
     fn seed() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(include_str!("../../migrations_model/001_model.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../../migrations_model/003_view_shape.sql"))
             .unwrap();
         c
     }
@@ -81,11 +88,13 @@ mod tests {
             sort: Some("captured".into()),
             group_by: Some("health".into()),
             density: None,
+            shape: Some("hierarchy".into()),
         };
         set(&c, "library", "library", &prefs).unwrap();
         let back = get(&c, "library", "library").unwrap();
         assert_eq!(back.layout.as_deref(), Some("grid"));
         assert_eq!(back.sort.as_deref(), Some("captured"));
+        assert_eq!(back.shape.as_deref(), Some("hierarchy"));
         assert_eq!(back.group_by.as_deref(), Some("health"));
     }
 

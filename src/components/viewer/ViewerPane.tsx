@@ -75,6 +75,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
       sort: null,
       group_by: null,
       density: null,
+      shape: null,
     });
   }, [prefsLoaded, prefsScope, layout]);
 

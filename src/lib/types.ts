@@ -44,6 +44,8 @@ export interface ListPage {
   sort: string;
 }
 
+export type Shape = "source" | "hierarchy";
+
 export type GroupBy = "type" | "health" | "month" | "none";
 export type SortBy = "name" | "date" | "captured" | "size" | "health";
 
@@ -54,11 +56,10 @@ export interface ListOptions {
   descending: boolean;
   expanded: string[];
   query: string | null;
-  /** Ask for the tree shape: the root is what nothing contains, and an
-   * expanded collector's members nest beneath it however deep they go. A grid
-   * wants the flat listing — everything at once — and a list with disclosure
-   * triangles wants this. */
-  tree?: boolean;
+  /** `source` — every item once, folders left out. `hierarchy` — the tree,
+   * rooted at what nothing contains, nesting an expanded folder's members
+   * however deep they go. */
+  shape?: Shape;
 }
 
 /** `p_detail`'s node shape — also what a search `Hit` carries (§3, `Row`). */
@@ -91,6 +92,8 @@ export interface ViewPrefs {
   sort: string | null;
   group_by: string | null;
   density: string | null;
+  /** `source` or `hierarchy` — which way the Library is being read. */
+  shape: string | null;
 }
 
 /** One column of `p_tree` — the previous column's selected row, expanded.

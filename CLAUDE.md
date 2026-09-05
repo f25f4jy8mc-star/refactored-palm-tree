@@ -54,11 +54,22 @@ scale rather than inventing its own.
 working. This is checklist P13 and the single biggest process lesson from the
 rebuild. Never report a feature as done off a successful compile alone.
 
-For interface work there is a headless walkthrough harness pattern: serve
-`dist/` and stub `window.__TAURI_INTERNALS__`, then drive the real frontend
-with Playwright (Chromium at `/opt/pw-browsers/chromium`, packages under
-`/opt/node22/lib/node_modules`). Frontend logic that can be pulled out into a
-pure module gets a vitest test instead — see `src/lib/selection.ts`.
+For interface work there is a headless walkthrough harness: serve `dist/` and
+stub `window.__TAURI_INTERNALS__`, then drive the real frontend with Playwright
+(Chromium at `/opt/pw-browsers/chromium`, packages under
+`/opt/node22/lib/node_modules`).
+
+**A hand-written stub proves nothing about the backend.** The tree work passed
+its walkthrough while the app was broken, because the stub answered with rows
+someone had written by hand and the Rust answered with something else. Where a
+walkthrough depends on the shape of backend data, generate a fixture from the
+real thing — `ARCHIVA_FIXTURE=<path> cargo test emit_fixture` scans a real
+directory tree and dumps what the real projections return — and drive the
+harness from that. If the frontend asks for something the fixture has no
+recorded answer for, that is a disagreement to surface, not a gap to fill in.
+
+Frontend logic that can be pulled out into a pure module gets a vitest test
+instead — see `src/lib/selection.ts`, `placement.ts`, `expansion.ts`.
 
 ## Layout
 
