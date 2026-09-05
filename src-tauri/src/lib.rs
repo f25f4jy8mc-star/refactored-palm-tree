@@ -7,17 +7,31 @@ use commands::Db;
 use std::sync::Mutex;
 use tauri::Manager;
 
+fn start(app: &tauri::App) -> anyhow::Result<()> {
+    let data_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+    let conn = db::open(&data_dir.join("archiva-model.sqlite"))?;
+    app.manage(Db(Mutex::new(conn)));
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&data_dir)?;
-            let conn = db::open(&data_dir.join("archiva-model.sqlite"))?;
-            app.manage(Db(Mutex::new(conn)));
-            Ok(())
+            // Say what went wrong here, while there is still somewhere to say
+            // it. A setup error becomes a panic inside an OS callback, and a
+            // panic there cannot unwind — the process aborts and the real
+            // cause is lost above a backtrace of the panic printer itself.
+            match start(app) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    eprintln!("Archiva could not start: {e:#}");
+                    Err(e.into())
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_rows,
@@ -53,5 +67,10 @@ pub fn run() {
             commands::clear_library,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            // Exiting beats panicking: the panic would cross the same FFI
+            // boundary and abort with the cause buried.
+            eprintln!("Archiva stopped: {e}");
+            std::process::exit(1);
+        });
 }

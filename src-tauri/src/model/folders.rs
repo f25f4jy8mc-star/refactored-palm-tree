@@ -28,7 +28,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
@@ -122,7 +122,11 @@ fn ensure_chain(
         }
         parent = Some(id);
     }
-    Ok(parent.expect("the chain always contains at least the directory itself"))
+    // The chain always holds at least `dir` itself, so this is unreachable —
+    // but it runs inside a Tauri command, where a panic crosses an FFI
+    // boundary and aborts the process rather than surfacing anything. An
+    // error is the honest shape for something that cannot happen.
+    parent.ok_or_else(|| anyhow!("no folder chain for {}", dir.display()))
 }
 
 fn create(conn: &Connection, dir: &Path, root: &Path) -> Result<String> {
