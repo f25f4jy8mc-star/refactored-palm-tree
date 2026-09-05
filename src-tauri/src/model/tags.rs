@@ -348,6 +348,10 @@ pub fn promote_to_collector(
     )?;
     let name = name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&tag_name);
 
+    // The folder type, so the new Collector can actually be expanded — see
+    // the same note in `folders.rs`.
+    const FOLDER: &str = "app.archiva.collector.folder";
+
     let collector_id = uuid_v7();
     conn.execute(
         "INSERT INTO node(id, node_type, content_type, content_type_tree,
@@ -355,8 +359,8 @@ pub fn promote_to_collector(
          VALUES (?1, 'collector', ?2, ?3, ?4, ?4, 'collector', 'folder', 'app_generated')",
         params![
             collector_id,
-            content_type::VIRTUAL,
-            serde_json::to_string(&content_type::closure(content_type::VIRTUAL))?,
+            FOLDER,
+            serde_json::to_string(&content_type::closure(FOLDER))?,
             name,
         ],
     )?;
@@ -557,6 +561,10 @@ mod tests {
             .unwrap();
         assert_eq!(name, "Bergamo 2024");
         assert_eq!(from.as_deref(), Some(tag.as_str()));
+        // And it can be opened, which a Collector typed as merely virtual
+        // could not.
+        let row = crate::model::projections::row(&c, &p.collector_id).unwrap();
+        assert!(row.capabilities.iter().any(|cap| cap == "expand"));
         // Not stripped, so the tag is still carried.
         assert_eq!(of_node(&c, "a").unwrap().len(), 1);
     }

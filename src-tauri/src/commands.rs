@@ -145,10 +145,18 @@ pub fn search_library(db: State<Db>, args: SearchArgs) -> Result<Vec<Hit>, Strin
     search::search(&conn, &args.query, &opts).map_err(|e| e.to_string())
 }
 
+/// `p_tree` — the Miller cascade, starting at `root` (a collector id) or at
+/// the library root when it is None. A pane scoped to a folder nested inside
+/// another needs to start there: that folder is not in the library's root
+/// column, so a walk that began with it stopped before it started.
 #[tauri::command]
-pub fn tree_columns(db: State<Db>, path: Vec<String>) -> Result<Vec<Column>, String> {
+pub fn tree_columns(
+    db: State<Db>,
+    root: Option<String>,
+    path: Vec<String>,
+) -> Result<Vec<Column>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    tree::tree(&conn, &path).map_err(|e| e.to_string())
+    tree::tree_from(&conn, root.as_deref(), &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

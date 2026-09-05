@@ -67,14 +67,35 @@ fn column_for(conn: &Connection, scope: Option<&str>, title: &str) -> Result<Col
     })
 }
 
+/// The cascade, starting anywhere.
+///
+/// `root` is the collector the first column shows the inside of; `None` is
+/// the library root — the nodes nothing contains. Starting anywhere is what
+/// a Viewer scoped to a folder needs: a folder nested inside another is not
+/// in the library's root column, so walking a path that began with it broke
+/// on the first step and returned the root column alone. The pane then
+/// dropped that column as "the root it did not ask for" and drew nothing.
+///
 /// Walk `path`, one column per id. The walk stops the moment an id doesn't
 /// name a row in the previous column, or names one that isn't a collector
 /// (only collectors expand — §2.3, `expand` is granted at
 /// `app.archiva.collector`) — the caller asked to descend into something
 /// that no longer describes a valid drill-down, and the honest answer is
 /// the columns that are still real, not an error or a guess.
-pub fn tree(conn: &Connection, path: &[String]) -> Result<Vec<Column>> {
-    let mut columns = vec![column_for(conn, None, "Library")?];
+pub fn tree_from(conn: &Connection, root: Option<&str>, path: &[String]) -> Result<Vec<Column>> {
+    let title = match root {
+        None => "Library".to_string(),
+        Some(id) => conn
+            .query_row(
+                "SELECT display_name FROM node WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
+            // A scope that no longer exists is not an error: the columns that
+            // are still real is the honest answer here too.
+            .unwrap_or_else(|_| "Library".to_string()),
+    };
+    let mut columns = vec![column_for(conn, root, &title)?];
     for id in path {
         let Some(last) = columns.last() else { break };
         let Some(row) = last.rows.iter().find(|r| &r.id == id) else {
@@ -87,6 +108,11 @@ pub fn tree(conn: &Connection, path: &[String]) -> Result<Vec<Column>> {
         columns.push(column_for(conn, Some(id.as_str()), &title)?);
     }
     Ok(columns)
+}
+
+/// The cascade from the library root.
+pub fn tree(conn: &Connection, path: &[String]) -> Result<Vec<Column>> {
+    tree_from(conn, None, path)
 }
 
 #[cfg(test)]
@@ -138,6 +164,40 @@ mod tests {
         contains("sub-folder", "nested-photo", "e3"); // Trips/Bergamo/Arcade
         // "Loose" is contained by nothing, so it too is a root member.
         c
+    }
+
+    #[test]
+    fn a_cascade_can_start_at_a_folder_nested_inside_another() {
+        // The reported blank column view: `Bergamo` is inside `Trips`, so it
+        // is not in the library's root column, and a walk that began with it
+        // used to stop before it started.
+        let c = seed();
+        let cols = tree_from(&c, Some("sub-folder"), &[]).unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(cols[0].scope_id.as_deref(), Some("sub-folder"));
+        assert_eq!(cols[0].title, "Bergamo");
+        assert_eq!(
+            cols[0].rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["nested-photo"]
+        );
+    }
+
+    #[test]
+    fn a_scoped_cascade_still_descends() {
+        let c = seed();
+        let cols = tree_from(&c, Some("root-folder"), &["sub-folder".into()]).unwrap();
+        assert_eq!(
+            cols.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
+            vec!["Trips", "Bergamo"]
+        );
+    }
+
+    #[test]
+    fn a_scope_that_no_longer_exists_gives_an_empty_first_column_not_an_error() {
+        let c = seed();
+        let cols = tree_from(&c, Some("gone"), &[]).unwrap();
+        assert_eq!(cols.len(), 1);
+        assert!(cols[0].rows.is_empty());
     }
 
     #[test]

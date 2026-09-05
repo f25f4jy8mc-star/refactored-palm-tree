@@ -134,6 +134,12 @@ fn create(conn: &Connection, dir: &Path, root: &Path) -> Result<String> {
         .unwrap_or_else(|| dir.to_string_lossy().to_string());
     let subtitle = if dir == root { "watched folder" } else { "folder" };
 
+    // The folder *type*, not the generic virtual one. `expand` is granted at
+    // `app.archiva.collector`, so a folder typed as merely virtual conforms
+    // to nothing that grants it — and a folder that cannot expand is a folder
+    // the Miller cascade will not open and the tree will not descend into.
+    const FOLDER: &str = "app.archiva.collector.folder";
+
     let id = uuid_v7();
     conn.execute(
         "INSERT INTO node(id, node_type, content_type, content_type_tree, title,
@@ -142,8 +148,8 @@ fn create(conn: &Connection, dir: &Path, root: &Path) -> Result<String> {
          VALUES (?1, 'collector', ?2, ?3, ?4, 'app_generated', ?5, ?4, ?6, 'folder', 3, 1)",
         params![
             id,
-            content_type::VIRTUAL,
-            serde_json::to_string(&content_type::closure(content_type::VIRTUAL))?,
+            FOLDER,
+            serde_json::to_string(&content_type::closure(FOLDER))?,
             name,
             dir.to_string_lossy(),
             subtitle,
@@ -308,6 +314,31 @@ mod tests {
                 ("photo".to_string(), "Trips".to_string()),
             ]
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_folder_can_be_expanded() {
+        // Without this the Miller cascade will not open it and the tree will
+        // not descend: `expand` is granted at `app.archiva.collector`, and a
+        // folder typed as merely virtual conforms to nothing that grants it.
+        let dir = scratch();
+        write(&dir.join("Trips/photo.jpg"), b"b");
+        let c = indexed(&dir);
+        let id: String = c
+            .query_row(
+                "SELECT id FROM node WHERE display_name = 'Trips'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let row = crate::model::projections::row(&c, &id).unwrap();
+        assert!(
+            row.capabilities.iter().any(|cap| cap == "expand"),
+            "a folder must be expandable — got {:?}",
+            row.capabilities
+        );
+        assert_eq!(row.node_type, "collector");
         std::fs::remove_dir_all(&dir).ok();
     }
 

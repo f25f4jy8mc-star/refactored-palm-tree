@@ -42,7 +42,7 @@ const MAX_DEPTH: i64 = 24;
 /// Collectors you made by hand stay: those are gatherings, and a gathering is
 /// something you have.
 pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
-    let page = projections::rows(conn, &flat(opts, opts.scope.clone()))?;
+    let page = projections::rows(conn, &source_opts(opts))?;
     let derived = super::folders::derived_ids(conn)?;
     let mut rows: Vec<ListRow> = page
         .rows
@@ -61,18 +61,44 @@ pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     })
 }
 
+/// The two sections a hierarchy is divided into, and why: a watched folder
+/// mirrors something on your disk and Archiva only reports it, while
+/// everything else in the tree is something made here. Mixing them makes the
+/// tree look like one filesystem you can edit anywhere in, and it isn't.
+pub const WATCHED: (&str, &str) = ("watched", "Watched folders");
+pub const MADE_HERE: (&str, &str) = ("archiva", "In Archiva");
+
 pub fn hierarchy(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     // The projection does the listing. `expanded` is cleared because the
-    // inlining it does is exactly what this module is replacing.
-    let base = projections::rows(conn, &flat(opts, opts.scope.clone()))?;
+    // inlining it does is exactly what this module is replacing, and grouping
+    // is cleared because a tree's sections are watched-versus-made-here, not
+    // whatever a flat list would group by.
+    let base = projections::rows(conn, &ungrouped(opts, opts.scope.clone()))?;
 
     // An unscoped tree starts at what nothing contains. A scoped one is
     // already the inside of a collector, so its members are its roots.
+    let derived = super::folders::derived_ids(conn)?;
     let roots: Vec<ListRow> = if opts.scope.is_some() {
         base.rows
     } else {
         let held = contained(conn)?;
-        base.rows.into_iter().filter(|r| !held.contains(&r.id)).collect()
+        let mut roots: Vec<ListRow> = base
+            .rows
+            .into_iter()
+            .filter(|r| !held.contains(&r.id))
+            .collect();
+        for row in roots.iter_mut() {
+            let (key, label) = if derived.contains(&row.id) {
+                WATCHED
+            } else {
+                MADE_HERE
+            };
+            row.group_key = key.to_string();
+            row.group_label = label.to_string();
+        }
+        // Watched folders first: they are where the material comes from.
+        roots.sort_by_key(|r| u8::from(r.group_key != WATCHED.0));
+        roots
     };
 
     let mut out: Vec<ListRow> = Vec::with_capacity(roots.len());
@@ -119,7 +145,7 @@ fn push_with_children(
     }
 
     path.push(id.clone());
-    let members = projections::rows(conn, &flat(opts, Some(id)))?;
+    let members = projections::rows(conn, &ungrouped(opts, Some(id)))?;
     for mut child in members.rows {
         // Children belong to the group their parent is drawn under, so an
         // expanded folder cannot scatter its contents across headers it is
@@ -132,17 +158,26 @@ fn push_with_children(
     Ok(())
 }
 
-/// The same options, listing one scope flat: no inlining, and no grouping
-/// below the top level — a folder's contents are already grouped by being in
-/// that folder.
-fn flat(opts: &ListOptions, scope: Option<String>) -> ListOptions {
+/// The same options, listing one scope with no inlining and no grouping —
+/// the tree supplies its own sections, and a folder's contents are already
+/// grouped by being in that folder.
+fn ungrouped(opts: &ListOptions, scope: Option<String>) -> ListOptions {
     ListOptions {
-        scope: scope.clone(),
-        group_by: if scope.is_some() {
-            "none".into()
-        } else {
-            opts.group_by.clone()
-        },
+        scope,
+        group_by: "none".into(),
+        sort: opts.sort.clone(),
+        descending: opts.descending,
+        expanded: Vec::new(),
+        query: opts.query.clone(),
+    }
+}
+
+/// Source keeps whatever grouping the pane asked for — it is a flat listing,
+/// and grouping it by type or month is exactly what that control is for.
+fn source_opts(opts: &ListOptions) -> ListOptions {
+    ListOptions {
+        scope: opts.scope.clone(),
+        group_by: opts.group_by.clone(),
         sort: opts.sort.clone(),
         descending: opts.descending,
         expanded: Vec::new(),
@@ -258,6 +293,7 @@ mod tests {
             ("zulu.jpg", &b"z"[..]),
             ("Trips/photo.jpg", &b"p"[..]),
             ("Trips/Bergamo/deep.jpg", &b"d"[..]),
+            ("notes/thoughts.md", &b"# Thoughts\n\nSomething."[..]),
         ] {
             let path = dir.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -271,6 +307,21 @@ mod tests {
         c.execute_batch(include_str!("../../migrations_model/001_model.sql")).unwrap();
         scan::scan(&mut c, &[dir.clone()], &[], &Bare).unwrap();
         folders::rebuild(&c, &[dir.clone()]).unwrap();
+        // One Collector made here rather than mirrored from disk, so the
+        // tree's two sections both have something in them.
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
+                              display_subtitle,icon_kind,source_kind)
+             VALUES ('made-here','collector','app.archiva.virtual','[]','My board',
+                     'board','folder','app_generated')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES ('made-here','board')",
+            [],
+        )
+        .unwrap();
         crate::model::health::recompute_all(&c).unwrap();
 
         let id_of = |name: &str| -> String {
@@ -300,25 +351,137 @@ mod tests {
             expanded,
             query: None,
         };
-        // Every open-set the walkthrough can reach, since only one branch is
-        // ever open at a time.
-        let spines: Vec<Vec<String>> = vec![
-            vec![],
-            vec![id_of(&root_name)],
-            vec![id_of(&root_name), id_of("Trips")],
-            vec![id_of(&root_name), id_of("Trips"), id_of("Bergamo")],
-        ];
+        // Every open-set the walkthrough can reach. Only one branch is open
+        // at a time, so a spine is a path down the folder tree — enumerate
+        // them from the folders themselves rather than listing the ones this
+        // test happens to click, or the harness reports a disagreement that
+        // is really just an unrecorded answer.
+        let mut spines: Vec<Vec<String>> = vec![vec![]];
+        {
+            let mut frontier: Vec<Vec<String>> = vec![vec![]];
+            while let Some(spine) = frontier.pop() {
+                let scope = spine.last().cloned();
+                let mut q = c
+                    .prepare(match scope {
+                        Some(_) => {
+                            "SELECT n.id FROM node n
+                               JOIN edge e ON e.source_id = n.id AND e.kind='contains'
+                                          AND e.target_id = ?1
+                              WHERE n.node_type = 'collector'"
+                        }
+                        None => {
+                            "SELECT n.id FROM node n
+                              WHERE n.node_type = 'collector' AND ?1 IS NULL
+                                AND NOT EXISTS (SELECT 1 FROM edge e
+                                                 WHERE e.kind='contains' AND e.source_id = n.id)"
+                        }
+                    })
+                    .unwrap();
+                let kids: Vec<String> = q
+                    .query_map(params![scope], |r| r.get(0))
+                    .unwrap()
+                    .collect::<std::result::Result<_, _>>()
+                    .unwrap();
+                drop(q);
+                for kid in kids {
+                    let mut next = spine.clone();
+                    next.push(kid);
+                    spines.push(next.clone());
+                    frontier.push(next);
+                }
+            }
+        }
         let mut hierarchy = serde_json::Map::new();
-        for spine in spines {
+        for spine in &spines {
             let key = spine.join(",");
-            hierarchy.insert(key, serde_json::to_value(hierarchy_page(&c, &base(spine))).unwrap());
+            hierarchy.insert(
+                key,
+                serde_json::to_value(hierarchy_page(&c, &base(spine.clone()))).unwrap(),
+            );
+        }
+
+        // What the Viewer's column mode actually gets, for the library root
+        // and for a nested folder — the case the user reported blank.
+        let cols = |path: Vec<String>| {
+            serde_json::to_value(crate::model::tree::tree(&c, &path).unwrap()).unwrap()
+        };
+        let columns = serde_json::json!({
+            "root": cols(vec![]),
+            "atRoot": cols(vec![id_of(&root_name)]),
+            "atTrips": cols(vec![id_of("Trips")]),
+            "rootThenTrips": cols(vec![id_of(&root_name), id_of("Trips")]),
+        });
+        // The cascade started at a nested folder — the case that came up
+        // blank, and the reason `tree_from` takes a root.
+        // The cascade from every start the walkthrough can reach: from the
+        // library root, and from each folder as its own root — the case that
+        // came up blank and the reason `tree_from` takes one.
+        let mut scoped = serde_json::Map::new();
+        for spine in &spines {
+            let key = format!("|{}", spine.join("|"));
+            scoped.insert(
+                key,
+                serde_json::to_value(crate::model::tree::tree_from(&c, None, spine).unwrap())
+                    .unwrap(),
+            );
+            if let Some((root, rest)) = spine.split_first() {
+                let key = format!("{}|{}", root, rest.join("|"));
+                scoped.insert(
+                    key,
+                    serde_json::to_value(
+                        crate::model::tree::tree_from(&c, Some(root), rest).unwrap(),
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+
+        // What the Viewer's column mode actually gets: the library root, and
+        // a folder nested inside another — the case reported as blank.
+        let cols = |path: Vec<String>| {
+            serde_json::to_value(crate::model::tree::tree(&c, &path).unwrap()).unwrap()
+        };
+        let columns = serde_json::json!({
+            "root": cols(vec![]),
+            "atRoot": cols(vec![id_of(&root_name)]),
+            "atTripsAlone": cols(vec![id_of("Trips")]),
+            "rootThenTrips": cols(vec![id_of(&root_name), id_of("Trips")]),
+        });
+        // The cascade started at a nested folder — the case that came up
+        // blank, and the reason `tree_from` takes a root.
+        // The cascade from every start the walkthrough can reach: from the
+        // library root, and from each folder as its own root — the case that
+        // came up blank and the reason `tree_from` takes one.
+        let mut scoped = serde_json::Map::new();
+        for spine in &spines {
+            let key = format!("|{}", spine.join("|"));
+            scoped.insert(
+                key,
+                serde_json::to_value(crate::model::tree::tree_from(&c, None, spine).unwrap())
+                    .unwrap(),
+            );
+            if let Some((root, rest)) = spine.split_first() {
+                let key = format!("{}|{}", root, rest.join("|"));
+                scoped.insert(
+                    key,
+                    serde_json::to_value(
+                        crate::model::tree::tree_from(&c, Some(root), rest).unwrap(),
+                    )
+                    .unwrap(),
+                );
+            }
         }
 
         let fixture = serde_json::json!({
             "rootName": root_name,
             "ids": ids,
             "source": serde_json::to_value(source(&c, &base(vec![])).unwrap()).unwrap(),
+            "sourceByType": serde_json::to_value(
+                source(&c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap()
+            ).unwrap(),
             "hierarchy": hierarchy,
+            "columns": columns,
+            "scoped": scoped,
         });
         std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).ok();
@@ -469,7 +632,67 @@ mod tests {
     }
 
     #[test]
-    fn children_are_drawn_under_their_parents_group_not_their_own() {
+    fn the_tree_separates_watched_folders_from_what_was_made_here() {
+        let c = db();
+        // A folder the folder pass made, standing for something on disk.
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
+                              source_kind,locator)
+             VALUES ('disk','collector','app.archiva.virtual','[]','Photos',
+                     'app_generated','/photos')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES ('disk','folder')",
+            [],
+        )
+        .unwrap();
+        // One made here: no locator, so the folder pass does not own it.
+        folder(&c, "mine", "My board");
+
+        let page = hierarchy(&c, &opts(&[])).unwrap();
+        let sections: Vec<(&str, &str)> = page
+            .rows
+            .iter()
+            .map(|r| (r.display_name.as_str(), r.group_key.as_str()))
+            .collect();
+        assert_eq!(
+            sections,
+            vec![("Photos", WATCHED.0), ("My board", MADE_HERE.0)],
+            "watched first, and never mixed"
+        );
+        assert_eq!(page.rows[0].group_label, WATCHED.1);
+    }
+
+    #[test]
+    fn a_folders_contents_stay_in_their_folders_section() {
+        let c = db();
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
+                              source_kind,locator)
+             VALUES ('disk','collector','app.archiva.virtual','[]','Photos',
+                     'app_generated','/photos')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES ('disk','folder')",
+            [],
+        )
+        .unwrap();
+        item(&c, "p", "photo.jpg");
+        contains(&c, "p", "disk");
+
+        let page = hierarchy(&c, &opts(&["disk"])).unwrap();
+        assert!(page.rows.iter().all(|r| r.group_key == WATCHED.0));
+    }
+
+    #[test]
+    fn a_group_control_does_not_scatter_a_folders_contents() {
+        // Group-by belongs to Source. A tree asked to group by type would
+        // otherwise file a folder's contents under headers the folder is not
+        // itself in, which is unreadable.
         let c = db();
         folder(&c, "f1", "Trips");
         item(&c, "p", "photo.jpg");
@@ -479,10 +702,7 @@ mod tests {
         o.group_by = "type".into();
         let page = hierarchy(&c, &o).unwrap();
         let groups: Vec<&String> = page.rows.iter().map(|r| &r.group_key).collect();
-        assert_eq!(
-            groups[0], groups[1],
-            "an expanded folder must not scatter its contents into other headers"
-        );
+        assert_eq!(groups[0], groups[1]);
     }
 
     #[test]

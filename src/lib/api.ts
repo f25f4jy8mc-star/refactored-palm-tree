@@ -39,8 +39,11 @@ export function searchLibrary(query: string, typeFilter?: string | null): Promis
   });
 }
 
-export function treeColumns(path: string[]): Promise<TreeColumn[]> {
-  return invoke("tree_columns", { path });
+/** The Miller cascade. `root` is the collector the first column shows the
+ * inside of; null is the library root. A folder nested inside another is not
+ * in the library's root column, so a pane scoped to one has to start there. */
+export function treeColumns(root: string | null, path: string[]): Promise<TreeColumn[]> {
+  return invoke("tree_columns", { root, path });
 }
 
 export function nodeDetail(id: string): Promise<Detail> {

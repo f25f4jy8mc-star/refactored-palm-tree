@@ -12,15 +12,16 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getViewPrefs, listRows, setViewPrefs, treeColumns } from "../../lib/api";
+import { getViewPrefs, listRows, setViewPrefs } from "../../lib/api";
 import { openTarget } from "../../lib/capabilities";
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
 import * as Sel from "../../lib/selection";
 import { isTyping, resolve } from "../../lib/shortcuts";
-import type { ListRow, Row, TreeColumn } from "../../lib/types";
+import type { ListRow, Row } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "../library/Thumbnail";
+import { MillerColumns } from "./MillerColumns";
 
 type Layout = "grid" | "list" | "column";
 
@@ -34,17 +35,13 @@ export function ViewerPane({ scopeId, isActive }: Props) {
   const [layout, setLayout] = useState<Layout>("column");
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
-  // Flat modes (icon/list) read p_rows; column mode reads p_tree.
+  // Flat modes (icon/list) read p_rows; column mode is MillerColumns, which
+  // reads p_tree and owns its own position.
   const [rows, setRows] = useState<ListRow[]>([]);
-  const [columns, setColumns] = useState<TreeColumn[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
-  // Column-mode position. `path` is the only part the backend sees.
-  const [path, setPath] = useState<string[]>([]);
-  const [activeCol, setActiveCol] = useState(0);
-  const [lastCursor, setLastCursor] = useState<string | null>(null);
   // Flat-mode selection.
   const [selection, setSelection] = useState<Sel.SelectionState>(Sel.EMPTY_SELECTION);
 
@@ -58,7 +55,6 @@ export function ViewerPane({ scopeId, isActive }: Props) {
 
   useEffect(() => {
     setPrefsLoaded(false);
-    setPath([]);
     getViewPrefs(prefsScope, "viewer")
       .then((p) => {
         if (p.layout === "grid" || p.layout === "list" || p.layout === "column") {
@@ -83,19 +79,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
     setLoading(true);
     setError(null);
     try {
-      if (layout === "column") {
-        const cols = await treeColumns(scopeId ? [scopeId, ...path] : path);
-        // p_tree always leads with the library root. A pane scoped to a
-        // collector *is* that collector, so its own column comes first and
-        // the root is dropped — which also makes column i line up with
-        // path[i] in both modes, rather than being off by one when scoped.
-        const shown = scopeId ? cols.slice(1) : cols;
-        setColumns(shown);
-        // The backend stops the cascade at a stale or non-expandable id, so
-        // what came back is the authority on how deep we actually are.
-        const realPath = shown.slice(1).map((c) => c.scope_id as string);
-        if (realPath.length !== path.length) setPath(realPath);
-      } else {
+      if (layout !== "column") {
         const page = await listRows({
           scope: scopeId ?? null,
           groupBy: "none",
@@ -111,7 +95,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [layout, scopeId, path]);
+  }, [layout, scopeId]);
 
   useEffect(() => {
     if (prefsLoaded) refresh();
@@ -119,44 +103,15 @@ export function ViewerPane({ scopeId, isActive }: Props) {
 
   useArchivaChanged(refresh);
 
-  const lastColIndex = columns.length - 1;
-
-  useEffect(() => {
-    if (layout !== "column" || lastColIndex < 0) return;
-    const colRows = columns[lastColIndex]?.rows ?? [];
-    if (!lastCursor || !colRows.some((r) => r.id === lastCursor)) {
-      setLastCursor(colRows[0]?.id ?? null);
-    }
-    // Keyed on the columns themselves; including the cursor would re-run
-    // this on every move within one column.
-  }, [columns, layout]);
-
-  useEffect(() => {
-    setActiveCol((c) => Math.min(c, Math.max(lastColIndex, 0)));
-  }, [lastColIndex]);
-
   /** The ids currently on screen, in rendered order — what arrows walk and
    * what Preview steps through. */
-  const order = useMemo(
-    () =>
-      layout === "column"
-        ? (columns[activeCol]?.rows ?? []).map((r) => r.id)
-        : rows.map((r) => r.id),
-    [layout, columns, activeCol, rows],
-  );
+  const order = useMemo(() => rows.map((r) => r.id), [rows]);
 
   const names = useMemo(() => {
     const m = new Map<string, string>();
-    const source = layout === "column" ? (columns[activeCol]?.rows ?? []) : rows;
-    source.forEach((r) => m.set(r.id, r.display_name));
+    rows.forEach((r) => m.set(r.id, r.display_name));
     return m;
-  }, [layout, columns, activeCol, rows]);
-
-  function idOfColumn(colIndex: number): string | null {
-    if (colIndex < path.length) return path[colIndex];
-    if (colIndex === lastColIndex) return lastCursor;
-    return null;
-  }
+  }, [rows]);
 
   /** Publish whatever is focused so the Inspector and Space follow it. */
   const publish = useCallback(
@@ -180,33 +135,6 @@ export function ViewerPane({ scopeId, isActive }: Props) {
         ? `Would open “${node.display_name}” via ${target} — that pane isn't built yet.`
         : `“${node.display_name}” has nothing to open it with.`,
     );
-  }
-
-  /* ------------------------------------------------------ column mode */
-
-  function selectInColumn(colIndex: number, row: Row) {
-    setActiveCol(colIndex);
-    publish(row.id);
-    if (colIndex === lastColIndex) setLastCursor(row.id);
-    // Selecting and opening are the same gesture in column view: a folder
-    // shows its contents in the next column the moment it's highlighted,
-    // and anything that can't be expanded closes the columns to its right.
-    if (row.capabilities.includes("expand")) {
-      setPath((p) => (p[colIndex] === row.id ? p : [...p.slice(0, colIndex), row.id]));
-    } else {
-      setPath((p) => (p.length > colIndex ? p.slice(0, colIndex) : p));
-    }
-  }
-
-  function expand(colIndex: number, row: Row) {
-    if (!row.capabilities.includes("expand")) return;
-    setPath((p) => [...p.slice(0, colIndex), row.id]);
-    setActiveCol(colIndex + 1);
-  }
-
-  function activate(colIndex: number, row: Row) {
-    if (row.node_type === "collector") expand(colIndex, row);
-    else announceOpen(row);
   }
 
   /* -------------------------------------------------------- flat modes */
@@ -245,55 +173,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
       return;
     }
 
-    if (layout === "column") return onColumnKey(e);
     return onFlatKey(e);
-  }
-
-  function onColumnKey(e: React.KeyboardEvent) {
-    const col = columns[activeCol];
-    if (!col) return;
-    const colOrder = col.rows.map((r) => r.id);
-    const currentId = idOfColumn(activeCol);
-    const rowIn = (id: string | null) => (id ? col.rows.find((r) => r.id === id) : undefined);
-
-    switch (e.key) {
-      case "ArrowUp":
-      case "ArrowDown": {
-        e.preventDefault();
-        const seed = currentId ? Sel.click(currentId) : Sel.EMPTY_SELECTION;
-        const next = Sel.moveCursor(seed, colOrder, e.key === "ArrowDown" ? 1 : -1, false);
-        const landed = rowIn(next.cursor);
-        if (landed) {
-          selectInColumn(activeCol, landed);
-          rowRefs.current.get(landed.id)?.scrollIntoView({ block: "nearest" });
-        }
-        return;
-      }
-      case "ArrowRight": {
-        e.preventDefault();
-        if (activeCol < lastColIndex) {
-          setActiveCol(activeCol + 1);
-          return;
-        }
-        const row = rowIn(currentId);
-        if (row) expand(activeCol, row);
-        return;
-      }
-      case "ArrowLeft":
-        e.preventDefault();
-        setActiveCol((c) => Math.max(0, c - 1));
-        return;
-      case "Enter": {
-        e.preventDefault();
-        const row = rowIn(currentId);
-        if (row) activate(activeCol, row);
-        return;
-      }
-    }
-    typeAhead(e, colOrder, currentId, (id) => {
-      const row = rowIn(id);
-      if (row) selectInColumn(activeCol, row);
-    });
   }
 
   function onFlatKey(e: React.KeyboardEvent) {
@@ -324,10 +204,9 @@ export function ViewerPane({ scopeId, isActive }: Props) {
         e.preventDefault();
         const row = rows.find((r) => r.id === selection.cursor);
         if (row) {
-          if (row.node_type === "collector") {
-            setPath([]);
-            setLayout("column");
-          } else announceOpen(row);
+          // A folder opens as columns, which is where a folder is legible.
+          if (row.node_type === "collector") setLayout("column");
+          else announceOpen(row);
         }
         return;
       }
@@ -378,10 +257,6 @@ export function ViewerPane({ scopeId, isActive }: Props) {
     else rowRefs.current.delete(id);
   };
 
-  // Column i is reached by path.slice(0, i), so a crumb's index is exactly
-  // how much of the path to keep when it's clicked.
-  const crumbs = columns.map((c, i) => ({ label: c.title, index: i }));
-
   const layoutButton = (which: Layout, glyph: string, title: string) => (
     <button
       className={"btn" + (layout === which ? " on" : "")}
@@ -397,26 +272,13 @@ export function ViewerPane({ scopeId, isActive }: Props) {
     <>
       <span className="taskbar-name">Viewer</span>
       <span className="taskbar-divider" />
-      {layout === "column" ? (
-        <span className="breadcrumb">
-          {crumbs.map((c, i) => (
-            <span key={c.index}>
-              {i > 0 && <span className="crumb-sep">›</span>}
-              <button
-                className="crumb"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setPath((p) => p.slice(0, c.index))}
-              >
-                {c.label}
-              </button>
-            </span>
-          ))}
-        </span>
-      ) : (
-        <span className="taskbar-status">
-          {loading ? "Loading…" : `${rows.length} item${rows.length === 1 ? "" : "s"}`}
-        </span>
-      )}
+      <span className="taskbar-status">
+        {layout === "column"
+          ? "Columns"
+          : loading
+            ? "Loading…"
+            : `${rows.length} item${rows.length === 1 ? "" : "s"}`}
+      </span>
       <span className="taskbar-divider" />
       {layoutButton("grid", "▦", "Icon view")}
       {layoutButton("list", "☰", "List view")}
@@ -438,7 +300,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
       className={`row${Sel.isSelected(selection, row.id) ? " selected" : ""}`}
       onClick={(e) => onRowClick(e, row.id)}
       onDoubleClick={() =>
-        row.node_type === "collector" ? (setPath([]), setLayout("column")) : announceOpen(row)
+        row.node_type === "collector" ? setLayout("column") : announceOpen(row)
       }
     >
       <span className="icon">
@@ -457,42 +319,10 @@ export function ViewerPane({ scopeId, isActive }: Props) {
   return (
     <div className="body">
       <div className="viewer" ref={paneRef} tabIndex={0} onKeyDown={onKeyDown}>
-        {loading && rows.length === 0 && columns.length === 0 ? (
+        {layout === "column" ? (
+          <MillerColumns rootId={scopeId ?? null} onAnnounce={announceOpen} />
+        ) : loading && rows.length === 0 ? (
           <div className="empty">Loading…</div>
-        ) : layout === "column" ? (
-          <div className="miller">
-            {columns.map((col, i) => (
-              <div
-                key={col.scope_id ?? "root"}
-                className={"miller-col" + (i === activeCol ? " active" : "")}
-                onMouseDown={() => setActiveCol(i)}
-              >
-                {col.rows.length === 0 ? (
-                  <div className="miller-empty">Empty</div>
-                ) : (
-                  col.rows.map((row) => (
-                    <div
-                      key={row.id}
-                      ref={rowRef(row.id)}
-                      className={`row${idOfColumn(i) === row.id ? " selected" : ""}`}
-                      onClick={() => selectInColumn(i, row)}
-                      onDoubleClick={() => activate(i, row)}
-                    >
-                      <span className="icon">
-                        <Thumbnail item={row} />
-                      </span>
-                      <span className="names">
-                        <span className="row-name">{row.display_name}</span>
-                      </span>
-                      {row.capabilities.includes("expand") && (
-                        <span className="miller-chevron">›</span>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            ))}
-          </div>
         ) : rows.length === 0 ? (
           <div className="empty">
             <div>This collector is empty.</div>

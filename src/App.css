@@ -1592,3 +1592,57 @@ body {
   border-radius: 0 4px 4px 0;
   margin-left: -1px;
 }
+
+/* ------------------------------------------- collapsible sections */
+
+button.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink-2);
+}
+button.group-head:hover {
+  color: var(--ink);
+}
+.group-caret {
+  font-size: 9px;
+  width: 9px;
+  flex: none;
+  color: var(--dim);
+}
+.group-count {
+  margin-left: auto;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--dim);
+}
+
+/* The Miller cascade, wherever it is hosted. */
+.miller-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  outline: none;
+}
+.miller-wrap .breadcrumb {
+  flex: none;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.miller-wrap .crumb.on {
+  color: var(--ink);
+  font-weight: 500;
+}
+.miller-wrap .miller {
+  flex: 1;
+  min-height: 0;
+}

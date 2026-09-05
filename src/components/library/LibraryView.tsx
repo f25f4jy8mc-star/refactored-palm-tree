@@ -7,10 +7,12 @@ import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
 import * as Expand from "../../lib/expansion";
 import { nodeIdOf, nodeIdsOf, placementKeys } from "../../lib/placement";
+import * as Sec from "../../lib/sections";
 import * as Sel from "../../lib/selection";
 import type { GroupBy, Hit, ListRow, Row, Shape, SortBy } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "./Thumbnail";
+import { MillerColumns } from "../viewer/MillerColumns";
 
 const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "type", label: "Type" },
@@ -55,6 +57,33 @@ function formatSize(bytes: number | null): string {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
+/** A group header that folds its section away. The count is of everything in
+ * the section, folded or not, so a shut section still says how much is in it. */
+function SectionHead({
+  label,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  label: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className={"group-head" + (collapsed ? " collapsed" : "")}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+    >
+      <span className="group-caret">{collapsed ? "▸" : "▾"}</span>
+      <span>{label}</span>
+      <span className="group-count">{count}</span>
+    </button>
+  );
+}
+
 function Snippet({ text }: { text: string }) {
   const parts = text.split(/[‹›]/);
   return (
@@ -66,7 +95,7 @@ function Snippet({ text }: { text: string }) {
   );
 }
 
-type Layout = "list" | "grid";
+type Layout = "list" | "grid" | "column";
 
 type Props = {
   /** Library and Scattered are the same view over the same projection
@@ -101,6 +130,9 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   // every item once — what you have — and Hierarchy is where those items sit.
   // Trying to be both at once is what put an item in the list twice.
   const [shape, setShape] = useState<Shape>("source");
+  // Which section headers are folded away. Their rows go; the header stays,
+  // or there would be nothing left to click to bring them back.
+  const [collapsed, setCollapsed] = useState<string[]>([]);
   const [selection, setSelection] = useState<Sel.SelectionState>(Sel.EMPTY_SELECTION);
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -117,7 +149,9 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     setPrefsLoaded(false);
     getViewPrefs(prefsScope, "browse")
       .then((p) => {
-        if (p.layout === "list" || p.layout === "grid") setLayout(p.layout);
+        if (p.layout === "list" || p.layout === "grid" || p.layout === "column") {
+          setLayout(p.layout);
+        }
         if (p.sort) setSort(p.sort as SortBy);
         if (mode === "library" && p.group_by) setGroupBy(p.group_by as GroupBy);
         if (p.shape === "source" || p.shape === "hierarchy") setShape(p.shape);
@@ -184,13 +218,27 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     };
   }, [searching, trimmedQuery]);
 
-  // A tree drawn as a grid of tiles has nowhere to put depth, so Hierarchy
-  // is always a list. Source is either.
-  const effectiveLayout: Layout = shape === "hierarchy" ? "list" : layout;
+  // A tree of tiles has nowhere to put depth, so Hierarchy is a tree or
+  // columns — never the grid. Source is a list or the grid, and columns would
+  // say nothing a flat listing doesn't.
+  const effectiveLayout: Layout =
+    shape === "hierarchy"
+      ? layout === "column"
+        ? "column"
+        : "list"
+      : layout === "column"
+        ? "list"
+        : layout;
 
-  const visibleRows = useMemo(
+  const filteredRows = useMemo(
     () => (kindFilter ? rows.filter((r) => r.icon_kind === kindFilter || r.node_type === kindFilter) : rows),
     [rows, kindFilter],
+  );
+  /** The sections present, counted before anything is folded. */
+  const sections = useMemo(() => Sec.sectionsOf(filteredRows), [filteredRows]);
+  const visibleRows = useMemo(
+    () => Sec.visibleRows(filteredRows, collapsed),
+    [filteredRows, collapsed],
   );
   // Selection, the cursor and type-ahead run on **placements**, not on node
   // ids. One item can be on screen twice — listed at the top level and again
@@ -531,25 +579,34 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       <span className="taskbar-divider" />
       <button
         className={"btn" + (effectiveLayout === "list" ? " on" : "")}
-        title="List"
+        title={shape === "hierarchy" ? "Tree" : "List"}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setLayout("list")}
       >
         ☰
       </button>
-      <button
-        className={"btn" + (effectiveLayout === "grid" ? " on" : "")}
-        title={
-          shape === "hierarchy"
-            ? "A tree of tiles has nowhere to put depth — Hierarchy is always a list"
-            : "Grid"
-        }
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setLayout("grid")}
-        disabled={shape === "hierarchy"}
-      >
-        ▦
-      </button>
+      {/* A tree of tiles has nowhere to put depth, so the grid is not offered
+          in Hierarchy at all rather than offered and inert; columns are not
+          offered in Source, where they would say nothing a flat list doesn't. */}
+      {shape === "hierarchy" ? (
+        <button
+          className={"btn" + (effectiveLayout === "column" ? " on" : "")}
+          title="Columns"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setLayout("column")}
+        >
+          ◫
+        </button>
+      ) : (
+        <button
+          className={"btn" + (effectiveLayout === "grid" ? " on" : "")}
+          title="Grid"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setLayout("grid")}
+        >
+          ▦
+        </button>
+      )}
       {mode === "library" && (
         <>
           <span className="taskbar-divider" />
@@ -650,6 +707,8 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
             Add Folder…
           </button>
         </div>
+      ) : effectiveLayout === "column" ? (
+        <MillerColumns rootId={null} onAnnounce={announceOpen} />
       ) : (
         <div
           className={`library ${effectiveLayout}`}
@@ -657,6 +716,17 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
           tabIndex={0}
           onKeyDown={onKeyDown}
         >
+          {sections
+            .filter((sec) => Sec.isCollapsed(collapsed, sec.key))
+            .map((sec) => (
+              <SectionHead
+                key={sec.key}
+                label={sec.label}
+                count={sec.count}
+                collapsed
+                onToggle={() => setCollapsed((c) => Sec.toggleSection(c, sec.key))}
+              />
+            ))}
           {visibleRows.map((row, i) => {
             const key = visibleKeys[i];
             const showHeader = row.group_key !== lastGroup && row.depth === 0;
@@ -711,10 +781,20 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
             // Grid tiles must be the grid's own direct children — a
             // wrapper div around each would become the grid item instead of
             // the tile, breaking the very column count columns() measures.
-            if (layout === "grid") return cloneElement(tile, { key: row.id });
+            if (effectiveLayout === "grid") return cloneElement(tile, { key: key });
+            const section = showHeader
+              ? sections.find((x) => x.key === row.group_key)
+              : undefined;
             return (
-              <div key={row.id}>
-                {showHeader && row.group_label && <div className="group-head">{row.group_label}</div>}
+              <div key={key}>
+                {section && row.group_label && (
+                  <SectionHead
+                    label={row.group_label}
+                    count={section.count}
+                    collapsed={false}
+                    onToggle={() => setCollapsed((c) => Sec.toggleSection(c, row.group_key))}
+                  />
+                )}
                 {tile}
               </div>
             );
