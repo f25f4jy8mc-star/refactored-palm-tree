@@ -43,7 +43,14 @@ const MAX_DEPTH: i64 = 24;
 /// something you have.
 pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     let page = projections::rows(conn, &source_opts(opts))?;
-    let derived = super::folders::derived_ids(conn)?;
+    // Only when listing the whole library. Inside a folder the subfolders are
+    // its contents — dropping them there would list a folder's files and
+    // silently lose everything in the folders beside them.
+    let derived = if opts.scope.is_none() {
+        super::folders::derived_ids(conn)?
+    } else {
+        std::collections::HashSet::new()
+    };
     let mut rows: Vec<ListRow> = page
         .rows
         .into_iter()
@@ -391,6 +398,46 @@ mod tests {
                 }
             }
         }
+        // The Viewer's cascade starts inside the watched folders, so it can
+        // reach spines the Library's cannot — a folder one level down is a
+        // *root* there. Enumerating from the Library's roots alone left those
+        // unrecorded, and the walkthrough reported it as a disagreement,
+        // which is precisely what it is for.
+        let mut w_spines: Vec<Vec<String>> = vec![vec![]];
+        {
+            let mut frontier: Vec<Vec<String>> = crate::model::tree::workspace(&c, None, &[])
+                .unwrap()[0]
+                .rows
+                .iter()
+                .filter(|r| r.node_type == "collector")
+                .map(|r| vec![r.id.clone()])
+                .collect();
+            w_spines.extend(frontier.iter().cloned());
+            while let Some(spine) = frontier.pop() {
+                let scope = spine.last().cloned();
+                let mut q = c
+                    .prepare(
+                        "SELECT n.id FROM node n
+                           JOIN edge e ON e.source_id = n.id AND e.kind='contains'
+                                      AND e.target_id = ?1
+                          WHERE n.node_type = 'collector'",
+                    )
+                    .unwrap();
+                let kids: Vec<String> = q
+                    .query_map(params![scope], |r| r.get(0))
+                    .unwrap()
+                    .collect::<std::result::Result<_, _>>()
+                    .unwrap();
+                drop(q);
+                for kid in kids {
+                    let mut next = spine.clone();
+                    next.push(kid);
+                    w_spines.push(next.clone());
+                    frontier.push(next);
+                }
+            }
+        }
+
         let mut hierarchy = serde_json::Map::new();
         for spine in &spines {
             let key = spine.join(",");
@@ -400,88 +447,94 @@ mod tests {
             );
         }
 
-        // What the Viewer's column mode actually gets, for the library root
-        // and for a nested folder — the case the user reported blank.
-        let cols = |path: Vec<String>| {
-            serde_json::to_value(crate::model::tree::tree(&c, &path).unwrap()).unwrap()
-        };
-        let columns = serde_json::json!({
-            "root": cols(vec![]),
-            "atRoot": cols(vec![id_of(&root_name)]),
-            "atTrips": cols(vec![id_of("Trips")]),
-            "rootThenTrips": cols(vec![id_of(&root_name), id_of("Trips")]),
-        });
-        // The cascade started at a nested folder — the case that came up
-        // blank, and the reason `tree_from` takes a root.
         // The cascade from every start the walkthrough can reach: from the
         // library root, and from each folder as its own root — the case that
-        // came up blank and the reason `tree_from` takes one.
+        // came up blank and the reason `tree_from` takes one. `workspace` is
+        // the same walks as the Viewer asks for them, where the watched
+        // folders are not drawn and their contents stand in their place.
         let mut scoped = serde_json::Map::new();
         for spine in &spines {
-            let key = format!("|{}", spine.join("|"));
             scoped.insert(
-                key,
+                format!("|{}", spine.join("|")),
                 serde_json::to_value(crate::model::tree::tree_from(&c, None, spine).unwrap())
                     .unwrap(),
             );
             if let Some((root, rest)) = spine.split_first() {
-                let key = format!("{}|{}", root, rest.join("|"));
                 scoped.insert(
-                    key,
+                    format!("{}|{}", root, rest.join("|")),
                     serde_json::to_value(
                         crate::model::tree::tree_from(&c, Some(root), rest).unwrap(),
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+        let mut workspace = serde_json::Map::new();
+        for spine in &w_spines {
+            workspace.insert(
+                format!("|{}", spine.join("|")),
+                serde_json::to_value(crate::model::tree::workspace(&c, None, spine).unwrap())
+                    .unwrap(),
+            );
+            if let Some((root, rest)) = spine.split_first() {
+                workspace.insert(
+                    format!("{}|{}", root, rest.join("|")),
+                    serde_json::to_value(
+                        crate::model::tree::workspace(&c, Some(root), rest).unwrap(),
                     )
                     .unwrap(),
                 );
             }
         }
 
-        // What the Viewer's column mode actually gets: the library root, and
-        // a folder nested inside another — the case reported as blank.
-        let cols = |path: Vec<String>| {
-            serde_json::to_value(crate::model::tree::tree(&c, &path).unwrap()).unwrap()
-        };
-        let columns = serde_json::json!({
-            "root": cols(vec![]),
-            "atRoot": cols(vec![id_of(&root_name)]),
-            "atTripsAlone": cols(vec![id_of("Trips")]),
-            "rootThenTrips": cols(vec![id_of(&root_name), id_of("Trips")]),
-        });
-        // The cascade started at a nested folder — the case that came up
-        // blank, and the reason `tree_from` takes a root.
-        // The cascade from every start the walkthrough can reach: from the
-        // library root, and from each folder as its own root — the case that
-        // came up blank and the reason `tree_from` takes one.
-        let mut scoped = serde_json::Map::new();
-        for spine in &spines {
-            let key = format!("|{}", spine.join("|"));
-            scoped.insert(
-                key,
-                serde_json::to_value(crate::model::tree::tree_from(&c, None, spine).unwrap())
-                    .unwrap(),
-            );
-            if let Some((root, rest)) = spine.split_first() {
-                let key = format!("{}|{}", root, rest.join("|"));
-                scoped.insert(
-                    key,
-                    serde_json::to_value(
-                        crate::model::tree::tree_from(&c, Some(root), rest).unwrap(),
-                    )
-                    .unwrap(),
-                );
-            }
+        // Taken before the compass edges below, so the listings recorded here
+        // are the listings of a plain scan and nothing else.
+        let source_page = serde_json::to_value(source(&c, &base(vec![])).unwrap()).unwrap();
+        let source_by_type = serde_json::to_value(
+            source(&c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap(),
+        )
+        .unwrap();
+
+        // A compass, from the real thing. The Inspector's cross is drawn
+        // entirely out of `p_record`'s slots, so a hand-written `slots: []`
+        // would prove nothing about it — the lesson recorded in CLAUDE.md.
+        // North and West are given links and South and East are left empty on
+        // purpose: an arm with nothing in it is the case the cross has to keep
+        // drawing.
+        for (source_id, target_id, kind, raw) in [
+            (id_of("zulu"), id_of("alpha"), "compass_s", None), // alpha's North holds zulu
+            (id_of("alpha"), id_of("photo"), "compass_w", None),
+            // A wikilink is West too (§1.7), and carries the text it was
+            // written as — the schema insists on it.
+            (id_of("alpha"), id_of("thoughts"), "wikilink", Some("Thoughts")),
+        ] {
+            c.execute(
+                "INSERT INTO edge(id,source_id,target_id,kind,origin,raw_target)
+                 VALUES (?1,?2,?3,?4,'user',?5)",
+                params![crate::model::scan::uuid_v7(), source_id, target_id, kind, raw],
+            )
+            .unwrap();
         }
+        let record =
+            serde_json::to_value(crate::model::record::record(&c, &id_of("alpha")).unwrap())
+                .unwrap();
+
+        // The Viewer's own root, spelled out: what its cascade opens with
+        // when nothing scopes it. The walkthrough checks this against the
+        // watched folder it must not be showing.
+        let viewer_root =
+            serde_json::to_value(crate::model::tree::workspace(&c, None, &[]).unwrap()).unwrap();
 
         let fixture = serde_json::json!({
             "rootName": root_name,
             "ids": ids,
-            "source": serde_json::to_value(source(&c, &base(vec![])).unwrap()).unwrap(),
-            "sourceByType": serde_json::to_value(
-                source(&c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap()
-            ).unwrap(),
+            "source": source_page,
+            "sourceByType": source_by_type,
             "hierarchy": hierarchy,
-            "columns": columns,
             "scoped": scoped,
+            "workspace": workspace,
+            "viewerRoot": viewer_root,
+            "record": record,
         });
         std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).ok();
@@ -716,6 +769,52 @@ mod tests {
         let ordinals: Vec<i64> = page.rows.iter().map(|r| r.ordinal).collect();
         assert_eq!(ordinals, vec![0, 1, 2]);
         assert_eq!(page.total, 3);
+    }
+
+    #[test]
+    fn a_scoped_source_listing_keeps_the_subfolders_inside_it() {
+        // The whole library leaves the folder scaffolding out; the inside of
+        // a folder cannot, or half its contents disappear.
+        let c = db();
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
+                              source_kind,locator)
+             VALUES ('disk','collector','app.archiva.collector.folder','[]','Photos',
+                     'app_generated','/photos')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES ('disk','folder')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
+                              source_kind,locator)
+             VALUES ('sub','collector','app.archiva.collector.folder','[]','Trips',
+                     'app_generated','/photos/trips')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES ('sub','folder')",
+            [],
+        )
+        .unwrap();
+        contains(&c, "sub", "disk");
+
+        let mut o = opts(&[]);
+        o.scope = Some("disk".into());
+        let inside = source(&c, &o).unwrap();
+        assert_eq!(
+            inside.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["Trips"],
+            "a subfolder is part of what a folder holds"
+        );
+
+        let whole = source(&c, &opts(&[])).unwrap();
+        assert!(whole.rows.is_empty(), "and the library itself leaves them out");
     }
 
     #[test]

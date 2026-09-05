@@ -320,7 +320,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
     <div className="body">
       <div className="viewer" ref={paneRef} tabIndex={0} onKeyDown={onKeyDown}>
         {layout === "column" ? (
-          <MillerColumns rootId={scopeId ?? null} onAnnounce={announceOpen} />
+          <MillerColumns rootId={scopeId ?? null} onAnnounce={announceOpen} workspace />
         ) : loading && rows.length === 0 ? (
           <div className="empty">Loading…</div>
         ) : rows.length === 0 ? (

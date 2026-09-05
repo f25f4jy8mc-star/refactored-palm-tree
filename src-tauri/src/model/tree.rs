@@ -25,28 +25,68 @@ pub struct Column {
     pub rows: Vec<Row>,
 }
 
+/// Where a cascade's first column starts when there is no scope.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Root {
+    /// Everything nothing contains, the watched folders among it. The
+    /// Library's Hierarchy, where the disk scaffolding is the point — it is
+    /// what tells you where a thing actually lives.
+    Library,
+    /// The same, with every watched folder replaced by what is inside it. The
+    /// Viewer is a workspace rather than a picture of the disk, and its flat
+    /// modes already leave the folder scaffolding out (`rowtree::source`), so
+    /// its cascade starting at a list of mount points was the odd one out.
+    /// Hoisting rather than hiding: dropping them outright would put every
+    /// indexed file behind a folder the pane refuses to draw.
+    Workspace,
+}
+
+/// The watched roots: a folder Collector this build derived from disk that
+/// nothing else contains. Computed rather than read off `display_subtitle`,
+/// which is written once at creation and cannot know that a source was
+/// removed afterwards.
+const WATCHED_ROOTS: &str = "SELECT n.id FROM node n
+     WHERE n.node_type = 'collector' AND n.source_kind = 'app_generated'
+       AND n.locator IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM edge e WHERE e.kind = 'contains' AND e.source_id = n.id
+       )";
+
 /// Ids and names of a column's members, sorted the same way `p_rows`' name
 /// sort is (case-insensitive, tie-broken by id so ties are stable across
 /// calls) — `scope = None` is "nothing contains this", not "everything".
-fn children_of(conn: &Connection, scope: Option<&str>) -> Result<Vec<(String, String)>> {
-    let sql = match scope {
-        Some(_) => {
-            "SELECT n.id, n.display_name FROM node n
-               JOIN edge e ON e.source_id = n.id AND e.kind = 'contains' AND e.target_id = ?1"
-        }
-        None => {
-            // `contains` runs item -> collector (source is the contained
-            // item, target is the collector), matching the compass table in
-            // §1.7 — "contains (item -> collector)". A root member is a node
-            // that is nobody's *source* here, not nobody's target.
-            "SELECT n.id, n.display_name FROM node n
-              WHERE n.node_type <> 'tag' AND ?1 IS NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM edge e WHERE e.kind = 'contains' AND e.source_id = n.id
-                )"
-        }
+fn children_of(conn: &Connection, scope: Option<&str>, root: Root) -> Result<Vec<(String, String)>> {
+    let scoped = "SELECT n.id, n.display_name FROM node n
+           JOIN edge e ON e.source_id = n.id AND e.kind = 'contains' AND e.target_id = ?1";
+    // `contains` runs item -> collector (source is the contained item, target
+    // is the collector), matching the compass table in §1.7 — "contains
+    // (item -> collector)". A root member is a node that is nobody's *source*
+    // here, not nobody's target.
+    let library = "SELECT n.id, n.display_name FROM node n
+          WHERE n.node_type <> 'tag' AND ?1 IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM edge e WHERE e.kind = 'contains' AND e.source_id = n.id
+            )"
+    .to_string();
+    // Held by nothing except a watched root: uncontained items and gatherings
+    // as before, plus whatever sits at the top of each watched folder.
+    let workspace = format!(
+        "WITH watched AS ({WATCHED_ROOTS})
+         SELECT n.id, n.display_name FROM node n
+          WHERE n.node_type <> 'tag' AND ?1 IS NULL
+            AND n.id NOT IN (SELECT id FROM watched)
+            AND NOT EXISTS (
+              SELECT 1 FROM edge e
+               WHERE e.kind = 'contains' AND e.source_id = n.id
+                 AND e.target_id NOT IN (SELECT id FROM watched)
+            )"
+    );
+    let sql = match (scope, root) {
+        (Some(_), _) => scoped.to_string(),
+        (None, Root::Library) => library,
+        (None, Root::Workspace) => workspace,
     };
-    let mut q = conn.prepare(sql)?;
+    let mut q = conn.prepare(&sql)?;
     let mut out: Vec<(String, String)> = q
         .query_map(params![scope], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<std::result::Result<_, _>>()?;
@@ -54,8 +94,8 @@ fn children_of(conn: &Connection, scope: Option<&str>) -> Result<Vec<(String, St
     Ok(out)
 }
 
-fn column_for(conn: &Connection, scope: Option<&str>, title: &str) -> Result<Column> {
-    let members = children_of(conn, scope)?;
+fn column_for(conn: &Connection, scope: Option<&str>, title: &str, root: Root) -> Result<Column> {
+    let members = children_of(conn, scope, root)?;
     let mut rows = Vec::with_capacity(members.len());
     for (id, _) in members {
         rows.push(projections::row(conn, &id)?);
@@ -83,6 +123,23 @@ fn column_for(conn: &Connection, scope: Option<&str>, title: &str) -> Result<Col
 /// that no longer describes a valid drill-down, and the honest answer is
 /// the columns that are still real, not an error or a guess.
 pub fn tree_from(conn: &Connection, root: Option<&str>, path: &[String]) -> Result<Vec<Column>> {
+    cascade(conn, root, path, Root::Library)
+}
+
+/// The cascade as the Viewer wants it: the watched folders themselves are not
+/// drawn, their contents are. Only the first column can differ — once you are
+/// inside a folder, its subfolders are its contents and hiding them there
+/// would lose everything beside the files.
+pub fn workspace(conn: &Connection, root: Option<&str>, path: &[String]) -> Result<Vec<Column>> {
+    cascade(conn, root, path, Root::Workspace)
+}
+
+fn cascade(
+    conn: &Connection,
+    root: Option<&str>,
+    path: &[String],
+    start: Root,
+) -> Result<Vec<Column>> {
     let title = match root {
         None => "Library".to_string(),
         Some(id) => conn
@@ -95,7 +152,7 @@ pub fn tree_from(conn: &Connection, root: Option<&str>, path: &[String]) -> Resu
             // are still real is the honest answer here too.
             .unwrap_or_else(|_| "Library".to_string()),
     };
-    let mut columns = vec![column_for(conn, root, &title)?];
+    let mut columns = vec![column_for(conn, root, &title, start)?];
     for id in path {
         let Some(last) = columns.last() else { break };
         let Some(row) = last.rows.iter().find(|r| &r.id == id) else {
@@ -105,7 +162,9 @@ pub fn tree_from(conn: &Connection, root: Option<&str>, path: &[String]) -> Resu
             break;
         }
         let title = row.display_name.clone();
-        columns.push(column_for(conn, Some(id.as_str()), &title)?);
+        // Every column after the first is the inside of a collector, which is
+        // the same listing whichever root the cascade started from.
+        columns.push(column_for(conn, Some(id.as_str()), &title, Root::Library)?);
     }
     Ok(columns)
 }
@@ -164,6 +223,108 @@ mod tests {
         contains("sub-folder", "nested-photo", "e3"); // Trips/Bergamo/Arcade
         // "Loose" is contained by nothing, so it too is a root member.
         c
+    }
+
+    /// A watched root as `folders::rebuild` makes one: derived from disk, so
+    /// `app_generated` with a locator, and contained by nothing.
+    fn seed_watched() -> Connection {
+        let c = seed();
+        c.execute(
+            "UPDATE node SET source_kind='app_generated', locator='/photos'
+              WHERE id='root-folder'",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE node SET source_kind='app_generated', locator='/photos/bergamo'
+              WHERE id='sub-folder'",
+            [],
+        )
+        .unwrap();
+        c
+    }
+
+    fn names(col: &Column) -> Vec<&str> {
+        col.rows.iter().map(|r| r.display_name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_viewer_starts_inside_the_watched_folders_rather_than_at_them() {
+        // Reported: the Viewer shouldn't display the watched folders. Its flat
+        // modes already leave them out, so its cascade was the odd one out.
+        let c = seed_watched();
+        let cols = workspace(&c, None, &[]).unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(
+            names(&cols[0]),
+            vec!["Bergamo", "Cover", "Loose"],
+            "the contents of Trips, plus what was never in a watched folder"
+        );
+        assert!(
+            !names(&cols[0]).contains(&"Trips"),
+            "the watched folder itself is not drawn"
+        );
+    }
+
+    #[test]
+    fn hoisting_keeps_everything_reachable() {
+        // Hiding the watched roots outright would put every indexed file
+        // behind a folder the pane refuses to draw.
+        let c = seed_watched();
+        let cols = workspace(&c, None, &["sub-folder".to_string()]).unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(names(&cols[1]), vec!["Arcade"]);
+    }
+
+    #[test]
+    fn the_library_cascade_still_shows_the_watched_folders() {
+        // Hierarchy is where the disk scaffolding is the point: it is what
+        // tells you where a thing actually lives.
+        let c = seed_watched();
+        let cols = tree(&c, &[]).unwrap();
+        assert_eq!(names(&cols[0]), vec!["Loose", "Trips"]);
+    }
+
+    #[test]
+    fn a_subfolder_is_only_hidden_at_the_top() {
+        // Bergamo is a folder too, and inside Trips it is content.
+        let c = seed_watched();
+        let cols = workspace(&c, Some("root-folder"), &[]).unwrap();
+        assert_eq!(names(&cols[0]), vec!["Bergamo", "Cover"]);
+    }
+
+    #[test]
+    fn something_held_by_a_gathering_as_well_stays_where_it_was_put() {
+        // Only "held by nothing but a watched root" is hoisted: a photograph
+        // you also filed in a board of your own belongs to that board, and
+        // showing it at the top as well would be the duplication the tree
+        // rebuild exists to remove.
+        let c = seed_watched();
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,icon_kind,
+                              source_kind)
+             VALUES ('board','collector','app.archiva.collector','[]','My board','folder',
+                     'app_generated')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES ('board','board')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO edge(id,source_id,target_id,kind) VALUES ('e9','top-photo','board','contains')",
+            [],
+        )
+        .unwrap();
+
+        let cols = workspace(&c, None, &[]).unwrap();
+        assert_eq!(
+            names(&cols[0]),
+            vec!["Bergamo", "Loose", "My board"],
+            "Cover is in the board now, and the board is at the top"
+        );
     }
 
     #[test]

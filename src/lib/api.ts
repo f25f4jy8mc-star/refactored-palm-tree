@@ -41,9 +41,17 @@ export function searchLibrary(query: string, typeFilter?: string | null): Promis
 
 /** The Miller cascade. `root` is the collector the first column shows the
  * inside of; null is the library root. A folder nested inside another is not
- * in the library's root column, so a pane scoped to one has to start there. */
-export function treeColumns(root: string | null, path: string[]): Promise<TreeColumn[]> {
-  return invoke("tree_columns", { root, path });
+ * in the library's root column, so a pane scoped to one has to start there.
+ *
+ * `workspace` asks for the Viewer's root column, which starts inside the
+ * watched folders rather than at them — the Library's Hierarchy wants the
+ * other one, where seeing the watched folders is the point. */
+export function treeColumns(
+  root: string | null,
+  path: string[],
+  workspace = false,
+): Promise<TreeColumn[]> {
+  return invoke("tree_columns", { root, path, workspace });
 }
 
 export function nodeDetail(id: string): Promise<Detail> {

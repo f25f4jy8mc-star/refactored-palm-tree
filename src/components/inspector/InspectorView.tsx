@@ -31,16 +31,20 @@ import {
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
 import { CAPABILITY_LABEL, type Capability } from "../../lib/capabilities";
-import type { FacetSlot, ItemRecord, Link, Tag } from "../../lib/types";
+import type { FacetSlot, ItemRecord, Link, Row, Slot, Tag } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "../library/Thumbnail";
 
-const COMPASS_LABEL: Record<string, string> = {
-  N: "North — broader",
-  S: "South — narrower",
-  W: "West — related",
-  E: "East — opposing",
-};
+/** The four directions, in the order the cross draws them. The sense is kept
+ * beside the name because "north" alone says nothing — and because N↔S invert
+ * while W↔W and E↔E do not (G23), which is only legible if both ends are
+ * named. */
+const COMPASS: { key: string; name: string; sense: string }[] = [
+  { key: "N", name: "North", sense: "broader" },
+  { key: "W", name: "West", sense: "related" },
+  { key: "E", name: "East", sense: "opposing" },
+  { key: "S", name: "South", sense: "narrower" },
+];
 
 const SOURCE_LABEL: Record<string, string> = {
   local_file: "A file on disk",
@@ -59,6 +63,109 @@ function formatBytes(bytes: number | null): string | null {
   if (!bytes) return null;
   const mb = bytes / 1_048_576;
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
+}
+
+/* --------------------------------------------------- the compass cross */
+
+/** One arm of the cross: what this item points at in one direction.
+ *
+ * Drawn even when empty, and for the same reason an unfilled facet is drawn —
+ * the empty arm is the prompt, and a cross missing an arm stops being a cross.
+ * The list folds away because four arms of five entries each would push
+ * everything below the compass off the pane. */
+function CompassArm({
+  slot,
+  name,
+  sense,
+  area,
+}: {
+  slot: Slot;
+  name: string;
+  sense: string;
+  area: string;
+}) {
+  const [open, setOpen] = useState(true);
+  // The groups are by node type; the cross wants the arm as one list, and the
+  // per-group cap is still respected by counting what it left out.
+  const links = slot.groups.flatMap((g) => g.links);
+  const hidden = slot.groups.reduce((n, g) => n + (g.total - g.links.length), 0);
+  const empty = slot.total === 0;
+
+  // `vacant`, not `empty`: `.empty` is already the pane-wide placeholder
+  // ("nothing selected"), so borrowing its name gave every unfilled arm a
+  // centring flex box with 64px of padding — a stretched, empty rectangle
+  // where a one-line "none" belonged.
+  return (
+    <div className={`compass-arm ${area}${empty ? " vacant" : ""}`}>
+      <button
+        className="compass-head"
+        disabled={empty}
+        aria-expanded={!empty && open}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="compass-dir">{name}</span>
+        <span className="compass-sense">{sense}</span>
+        <span className="compass-count">
+          {empty ? "none" : `${slot.total} item${slot.total === 1 ? "" : "s"}`}
+        </span>
+        {!empty && <span className="group-caret">{open ? "▾" : "▸"}</span>}
+      </button>
+      {!empty && open && (
+        <ul className="compass-list">
+          {links.map((l) => (
+            <li key={l.edge_id} title={l.label ?? l.kind}>
+              <span className="icon">
+                <Thumbnail item={l.node} />
+              </span>
+              <span className="compass-name">{l.node.display_name}</span>
+            </li>
+          ))}
+          {hidden > 0 && <li className="compass-more">+{hidden} more</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** The item at the centre, with what it points at around it. Four separate
+ * sections could say the same things and could not say *this*: that the four
+ * directions are one structure, and which of them this item has nothing in. */
+function CompassCross({ slots, node }: { slots: Slot[]; node: Row }) {
+  const at = (key: string): Slot =>
+    slots.find((s) => s.compass === key) ?? { compass: key, total: 0, groups: [] };
+  const total = slots.reduce((n, s) => n + s.total, 0);
+
+  return (
+    <section className="inspect-block">
+      <h3>
+        Compass
+        <span className="count">{total}</span>
+      </h3>
+      <div className="compass-cross">
+        {COMPASS.map((c) => (
+          <CompassArm
+            key={c.key}
+            slot={at(c.key)}
+            name={c.name}
+            sense={c.sense}
+            area={`at-${c.key.toLowerCase()}`}
+          />
+        ))}
+        <div className="compass-centre">
+          <span className="icon">
+            <Thumbnail item={node} />
+          </span>
+          <span className="compass-centre-name">{node.display_name}</span>
+        </div>
+      </div>
+      <p className="hint">
+        North and South invert: what is broader than this has this as something
+        narrower. West and East do not — related and opposing read the same from
+        either end (G23).
+      </p>
+    </section>
+  );
 }
 
 function LinkTile({ link }: { link: Link }) {
@@ -308,25 +415,34 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
               else on this page describes the one shown.
             </p>
           )}
-          {classification.tiers.map((tier) => (
-            <div className="tier" key={tier.tier}>
-              <div className="tier-head">
-                <span>{tier.label}</span>
-                <span className="tier-n">tier {tier.tier}</span>
+          {/* The three tiers side by side rather than stacked: they are three
+              kinds of question about one item — what it is, what it is about,
+              what is in it — and reading them as columns is what makes an
+              empty one visible at a glance. The header counts its own tier,
+              so "which of these have I actually filled in" needs no arithmetic. */}
+          <div className="tier-columns">
+            {classification.tiers.map((tier) => (
+              <div className="tier" key={tier.tier}>
+                <div className="tier-head" title={`tier ${tier.tier}`}>
+                  <span>{tier.label}</span>
+                  <span className="tier-n">
+                    {tier.facets.filter((f) => f.tags.length > 0).length}/{tier.facets.length}
+                  </span>
+                </div>
+                {tier.facets.map((f) => (
+                  <FacetRow
+                    key={f.facet}
+                    slot={f}
+                    known={known}
+                    targets={targets}
+                    busy={busy}
+                    onApply={onApply}
+                    onRemove={onRemove}
+                  />
+                ))}
               </div>
-              {tier.facets.map((f) => (
-                <FacetRow
-                  key={f.facet}
-                  slot={f}
-                  known={known}
-                  targets={targets}
-                  busy={busy}
-                  onApply={onApply}
-                  onRemove={onRemove}
-                />
-              ))}
-            </div>
-          ))}
+            ))}
+          </div>
 
           {classification.suggestions.length > 0 && (
             <div className="suggests">
@@ -528,29 +644,7 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
 
         {/* ------------------------------------------------------- links */}
 
-        {slots.map((s) =>
-          s.total === 0 ? null : (
-            <section className="inspect-block" key={s.compass}>
-              <h3>
-                {COMPASS_LABEL[s.compass] ?? s.compass}
-                <span className="count">{s.total}</span>
-              </h3>
-              {s.groups.map((g) => (
-                <div key={g.node_type} className="link-group">
-                  <div className="link-group-head">
-                    {g.node_type}
-                    {g.total > g.links.length && <span className="count">+{g.total - g.links.length}</span>}
-                  </div>
-                  <div className="link-tiles">
-                    {g.links.map((l) => (
-                      <LinkTile key={l.edge_id} link={l} />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </section>
-          ),
-        )}
+        <CompassCross slots={slots} node={node} />
 
         {suggestions.length > 0 && (
           <section className="inspect-block">

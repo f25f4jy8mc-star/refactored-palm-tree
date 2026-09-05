@@ -149,14 +149,25 @@ pub fn search_library(db: State<Db>, args: SearchArgs) -> Result<Vec<Hit>, Strin
 /// the library root when it is None. A pane scoped to a folder nested inside
 /// another needs to start there: that folder is not in the library's root
 /// column, so a walk that began with it stopped before it started.
+///
+/// `workspace` is the Viewer's root: the watched folders are not drawn, their
+/// contents are. The Library's Hierarchy asks for the other one, where the
+/// disk scaffolding is the point. It is decided per caller rather than in the
+/// projection because it is a question about the pane, not about the data.
 #[tauri::command]
 pub fn tree_columns(
     db: State<Db>,
     root: Option<String>,
     path: Vec<String>,
+    workspace: Option<bool>,
 ) -> Result<Vec<Column>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    tree::tree_from(&conn, root.as_deref(), &path).map_err(|e| e.to_string())
+    let cascade = if workspace.unwrap_or(false) {
+        tree::workspace
+    } else {
+        tree::tree_from
+    };
+    cascade(&conn, root.as_deref(), &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

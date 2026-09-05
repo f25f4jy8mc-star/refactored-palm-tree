@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { cloneElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { addSource, getViewPrefs, listRows, pickFolder, searchLibrary, setViewPrefs } from "../../lib/api";
 import { openTarget } from "../../lib/capabilities";
@@ -324,7 +324,10 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
    * is a single column, so ↑/↓ there is just ±1 and ←/→ is a no-op. */
   function columns(): number {
     if (effectiveLayout !== "grid" || searching) return 1;
-    const el = listRef.current;
+    // The grid is per section now, so the pane itself is an ordinary block.
+    // Every section grid resolves to the same track count — same width, same
+    // rule — so the first one on screen answers for all of them.
+    const el = listRef.current?.querySelector(".grid-tiles") as HTMLElement | null;
     if (!el) return 1;
     return Math.max(1, getComputedStyle(el).gridTemplateColumns.split(" ").length);
   }
@@ -477,6 +480,67 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       setError(String(e));
     }
   }, []);
+
+  /** Every drawn row paired with the placement key it is selected by, so a
+   * section can be assembled without losing which of two identical items a
+   * tile stands for. */
+  const drawn = useMemo(
+    () => visibleRows.map((row, i) => ({ row, key: visibleKeys[i] })),
+    [visibleRows, visibleKeys],
+  );
+
+  /** One row, as a list row or as a tile — the same element either way, so
+   * the two layouts cannot drift on selection, thumbnails or double-click. */
+  function itemTile(row: ListRow, key: string) {
+    const isSelected = Sel.isSelected(selection, key);
+    return (
+      <div
+        key={key}
+        ref={(el) => {
+          if (el) rowRefs.current.set(key, el);
+          else rowRefs.current.delete(key);
+        }}
+        className={`row${isSelected ? " selected" : ""}`}
+        style={effectiveLayout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
+        onClick={(e) => onRowClick(e, key)}
+        onDoubleClick={() => openRow(row, key)}
+      >
+        {effectiveLayout === "list" &&
+          (row.node_type === "collector" && row.child_count > 0 ? (
+            <button
+              className="disclosure"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleExpanded(key);
+              }}
+              aria-label={Expand.isOpen(expanded, row.id) ? "Collapse" : "Expand"}
+            >
+              {Expand.isOpen(expanded, row.id) ? "▾" : "▸"}
+            </button>
+          ) : (
+            <span className="indent" style={{ width: 16 }} />
+          ))}
+        <span className="icon">
+          <Thumbnail item={row} />
+        </span>
+        <span className="names">
+          <span className="row-name">{row.display_name}</span>
+          {effectiveLayout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
+        </span>
+        {effectiveLayout === "list" && row.availability !== "present" && (
+          <span className="badge missing">{row.availability.replace("_", " ")}</span>
+        )}
+        {effectiveLayout === "list" && row.health_missing.length > 0 && (
+          <span className="badge" title={row.health_missing.join(", ")}>
+            {row.health_missing[0]}
+          </span>
+        )}
+        {effectiveLayout === "list" && row.size_bytes ? (
+          <span className="row-sub">{formatSize(row.size_bytes)}</span>
+        ) : null}
+      </div>
+    );
+  }
 
   let lastGroup: string | null = null;
   let lastMatchKind: Hit["match_kind"] | null = null;
@@ -709,6 +773,37 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         </div>
       ) : effectiveLayout === "column" ? (
         <MillerColumns rootId={null} onAnnounce={announceOpen} />
+      ) : effectiveLayout === "grid" ? (
+        // Finder's arrangement: a header, that group's tiles beneath it, then
+        // the next header. The section owns the grid — a single grid over the
+        // whole pane would make each header a grid item, which is why the
+        // headers were dropped here entirely and grouping looked inert.
+        <div className="library grid" ref={listRef} tabIndex={0} onKeyDown={onKeyDown}>
+          {sections.map((sec) => {
+            const shut = Sec.isCollapsed(collapsed, sec.key);
+            return (
+              <div className="grid-section" key={sec.key}>
+                {/* "No grouping" returns one section with no label (`all`),
+                    and a header for it would say nothing. */}
+                {sec.label && (
+                  <SectionHead
+                    label={sec.label}
+                    count={sec.count}
+                    collapsed={shut}
+                    onToggle={() => setCollapsed((c) => Sec.toggleSection(c, sec.key))}
+                  />
+                )}
+                {!shut && (
+                  <div className="grid-tiles">
+                    {drawn
+                      .filter((d) => d.row.group_key === sec.key)
+                      .map(({ row, key }) => itemTile(row, key))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       ) : (
         <div
           className={`library ${effectiveLayout}`}
@@ -727,61 +822,9 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
                 onToggle={() => setCollapsed((c) => Sec.toggleSection(c, sec.key))}
               />
             ))}
-          {visibleRows.map((row, i) => {
-            const key = visibleKeys[i];
+          {drawn.map(({ row, key }) => {
             const showHeader = row.group_key !== lastGroup && row.depth === 0;
             lastGroup = row.group_key;
-            const isSelected = Sel.isSelected(selection, key);
-            const tile = (
-              <div
-                ref={(el) => {
-                  if (el) rowRefs.current.set(key, el);
-                  else rowRefs.current.delete(key);
-                }}
-                className={`row${isSelected ? " selected" : ""}`}
-                style={effectiveLayout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
-                onClick={(e) => onRowClick(e, key)}
-                onDoubleClick={() => openRow(row, key)}
-              >
-                {effectiveLayout === "list" &&
-                  (row.node_type === "collector" && row.child_count > 0 ? (
-                    <button
-                      className="disclosure"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleExpanded(key);
-                      }}
-                      aria-label={Expand.isOpen(expanded, row.id) ? "Collapse" : "Expand"}
-                    >
-                      {Expand.isOpen(expanded, row.id) ? "▾" : "▸"}
-                    </button>
-                  ) : (
-                    <span className="indent" style={{ width: 16 }} />
-                  ))}
-                <span className="icon">
-                  <Thumbnail item={row} />
-                </span>
-                <span className="names">
-                  <span className="row-name">{row.display_name}</span>
-                  {effectiveLayout === "list" && <span className="row-sub">{row.display_subtitle}</span>}
-                </span>
-                {effectiveLayout === "list" && row.availability !== "present" && (
-                  <span className="badge missing">{row.availability.replace("_", " ")}</span>
-                )}
-                {effectiveLayout === "list" && row.health_missing.length > 0 && (
-                  <span className="badge" title={row.health_missing.join(", ")}>
-                    {row.health_missing[0]}
-                  </span>
-                )}
-                {effectiveLayout === "list" && row.size_bytes ? (
-                  <span className="row-sub">{formatSize(row.size_bytes)}</span>
-                ) : null}
-              </div>
-            );
-            // Grid tiles must be the grid's own direct children — a
-            // wrapper div around each would become the grid item instead of
-            // the tile, breaking the very column count columns() measures.
-            if (effectiveLayout === "grid") return cloneElement(tile, { key: key });
             const section = showHeader
               ? sections.find((x) => x.key === row.group_key)
               : undefined;
@@ -795,7 +838,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
                     onToggle={() => setCollapsed((c) => Sec.toggleSection(c, row.group_key))}
                   />
                 )}
-                {tile}
+                {itemTile(row, key)}
               </div>
             );
           })}

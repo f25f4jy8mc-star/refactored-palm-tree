@@ -201,12 +201,23 @@ body {
   padding-bottom: 64px; /* keeps rows from hiding behind the floating taskbar */
 }
 
-.library.grid {
+/* Grouped like Finder: a header, then that group's tiles, then the next
+   header. The grid is therefore per section rather than on the pane — with
+   one grid over the whole thing the headers become grid items and end up in
+   a column beside the tiles, which is why grouping appeared not to work in
+   grid view at all. */
+.library.grid .grid-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   align-content: flex-start;
   gap: 4px;
   padding: 16px;
+}
+
+/* An ungrouped grid has one section and no header, so it must not gain a
+   second helping of the padding above. */
+.library.grid .grid-section + .grid-section .grid-tiles {
+  padding-top: 8px;
 }
 
 .library.grid .row {
@@ -862,6 +873,162 @@ body {
   max-width: 160px;
 }
 
+/* The compass, drawn as a compass. North and South span the width because the
+   corners of a 3×3 would be dead space in a pane this narrow, and the shape
+   still reads: the item in the middle, what it points at around it. */
+.compass-cross {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "n n n"
+    "w c e"
+    "s s s";
+  gap: 6px;
+  align-items: start;
+}
+
+.compass-arm.at-n {
+  grid-area: n;
+}
+.compass-arm.at-w {
+  grid-area: w;
+}
+.compass-arm.at-e {
+  grid-area: e;
+}
+.compass-arm.at-s {
+  grid-area: s;
+}
+
+.compass-arm {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.compass-arm.vacant {
+  border-style: dashed;
+  opacity: 0.65;
+}
+
+.compass-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: var(--wash);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.compass-head:disabled {
+  cursor: default;
+}
+
+.compass-dir {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.compass-sense {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.compass-count {
+  margin-left: auto;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.compass-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.compass-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.compass-list li:hover {
+  background: var(--wash);
+}
+
+.compass-list .icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 3px;
+  color: var(--ink-2);
+  flex: 0 0 auto;
+}
+
+.compass-name,
+.compass-centre-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.compass-more {
+  font-size: 10.5px;
+  color: var(--dim);
+  padding-left: 4px;
+}
+
+.compass-centre {
+  grid-area: c;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border: 1px solid var(--ink);
+  border-radius: 8px;
+  min-width: 0;
+  text-align: center;
+}
+
+.compass-centre .icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 6px;
+  color: var(--ink-2);
+}
+
+.compass-centre-name {
+  max-width: 100%;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -1128,6 +1295,40 @@ body {
 }
 
 /* ------------------------------------------------------ the facet grid */
+
+/* Three tiers side by side — metadata, classification, content — so an empty
+   one is visible without scrolling past the others. `auto-fit` rather than a
+   fixed three: a fourth column appears when anything is unfiled, and a narrow
+   pane folds them back into a stack instead of squeezing them. */
+.tier-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: flex-start;
+}
+
+/* Flex rather than a grid of fixed tracks: there are three tiers, and a
+   fourth only when something is unfiled, so the columns should share out the
+   width they are given instead of leaving empty tracks beside them. Below
+   three times the basis they wrap into a stack. */
+.tier-columns .tier {
+  flex: 1 1 168px;
+  min-width: 0;
+}
+
+/* In a column there is no room for a label gutter, so the facet name sits
+   above its tags rather than beside them. */
+.tier-columns .facet-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+
+.tier-columns .facet-head {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  padding-top: 0;
+}
 
 .tier {
   margin: 0 0 12px;
@@ -1602,7 +1803,10 @@ button.group-head {
   width: 100%;
   text-align: left;
   border: 0;
-  background: none;
+  border-bottom: 1px solid var(--line);
+  /* Not `none`: the header is sticky, so anything scrolling under it would
+     otherwise read straight through the label. */
+  background: var(--wash);
   font: inherit;
   cursor: pointer;
   color: var(--ink-2);

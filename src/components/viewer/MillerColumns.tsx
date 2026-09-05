@@ -29,9 +29,16 @@ type Props = {
   rootId: string | null;
   /** Said when a row is activated that nothing can open yet. */
   onAnnounce?: (row: Row) => void;
+  /**
+   * Start the root column inside the watched folders rather than at them.
+   * The Viewer is a workspace and its flat modes already leave the folder
+   * scaffolding out; the Library's Hierarchy wants it, because showing where
+   * a thing actually lives is what that shape is for.
+   */
+  workspace?: boolean;
 };
 
-export function MillerColumns({ rootId, onAnnounce }: Props) {
+export function MillerColumns({ rootId, onAnnounce, workspace = false }: Props) {
   const [columns, setColumns] = useState<TreeColumn[]>([]);
   const [path, setPath] = useState<string[]>([]);
   const [activeCol, setActiveCol] = useState(0);
@@ -53,7 +60,7 @@ export function MillerColumns({ rootId, onAnnounce }: Props) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const cols = await treeColumns(rootId, path);
+      const cols = await treeColumns(rootId, path, workspace);
       setColumns(cols);
       setError(null);
       // The backend stops the cascade at a stale or non-expandable id, so
@@ -65,7 +72,7 @@ export function MillerColumns({ rootId, onAnnounce }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [rootId, path]);
+  }, [rootId, path, workspace]);
 
   useEffect(() => {
     refresh();
