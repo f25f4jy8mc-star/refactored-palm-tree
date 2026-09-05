@@ -48,6 +48,9 @@ pub fn run() {
             commands::dismiss_suggestion,
             commands::add_remote_item,
             commands::recheck_availability,
+            commands::preview_removal,
+            commands::delete_items,
+            commands::clear_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

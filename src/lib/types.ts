@@ -304,3 +304,24 @@ export interface Recheck {
   permission_denied: number;
   remote_uncached: number;
 }
+
+/* ---------------------------------------------------------- removal */
+
+/** What is about to go, asked for before anything goes — there is no undo. */
+export interface RemovalPreview {
+  items: number;
+  collectors: number;
+  notes: number;
+  /** Members that will be released from the collectors being removed. They
+   * stay in the library; deleting a folder never deletes what it gathered. */
+  released: number;
+  withFiles: number;
+}
+
+export interface RemovalResult {
+  forgotten: number;
+  trashed: number;
+  /** Files that would not move. Their rows are kept, so a partial failure
+   * never reads as a success. */
+  failed: string[];
+}

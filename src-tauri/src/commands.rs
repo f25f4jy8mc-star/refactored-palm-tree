@@ -19,6 +19,7 @@ use crate::model::health;
 use crate::model::identity::{self, Recheck};
 use crate::model::projections::{self, Detail, ListOptions, ListPage};
 use crate::model::record::{self, Record};
+use crate::model::removal::{self, Preview, Removal};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
 use crate::model::sources::{self, Source};
@@ -167,14 +168,38 @@ pub fn add_source(app: AppHandle, db: State<Db>, path: String) -> Result<ScanRep
     rescan(app, db)
 }
 
+/// Stop watching a folder.
+///
+/// `forget_items` decides what happens to what was indexed from it. The
+/// default is to keep them — their tags, links and notes are the user's work
+/// and unwatching a folder should not throw that away. Passing true is the
+/// answer to "I want this gone", and it forgets rows only: the files are
+/// never touched by this call.
 #[tauri::command]
-pub fn remove_source(app: AppHandle, db: State<Db>, id: String) -> Result<(), String> {
-    {
+pub fn remove_source(
+    app: AppHandle,
+    db: State<Db>,
+    id: String,
+    forget_items: bool,
+) -> Result<usize, String> {
+    let forgotten = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM source WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
         sources::remove(&conn, &id).map_err(|e| e.to_string())?;
-    }
+        if forget_items {
+            removal::forget_under(&conn, &path).map_err(|e| e.to_string())?
+        } else {
+            0
+        }
+    };
     let _ = app.emit("archiva:changed", ());
-    Ok(())
+    Ok(forgotten)
 }
 
 #[tauri::command]
@@ -512,4 +537,60 @@ pub fn recheck_availability(app: AppHandle, db: State<Db>) -> Result<Recheck, St
     };
     let _ = app.emit("archiva:changed", ());
     Ok(out)
+}
+
+/* ------------------------------------------------------------ removal */
+
+/// What is about to go, before anything goes. There is no undo yet, so the
+/// interface shows this and waits.
+#[tauri::command]
+pub fn preview_removal(db: State<Db>, ids: Vec<String>) -> Result<Preview, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    removal::preview(&conn, &ids).map_err(|e| e.to_string())
+}
+
+/// Remove items from the library.
+///
+/// `trash_files` false forgets the rows and leaves every file alone — which
+/// means a file still inside a watched folder comes back on the next scan, as
+/// a new item with none of its tags. True moves each file into Archiva's own
+/// trash folder first, which is inside the workspace the scanner excludes, so
+/// it stays gone and stays recoverable.
+#[tauri::command]
+pub fn delete_items(
+    app: AppHandle,
+    db: State<Db>,
+    ids: Vec<String>,
+    trash_files: bool,
+) -> Result<Removal, String> {
+    let trash_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("trash");
+    let out = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        if trash_files {
+            removal::trash(&conn, &ids, &trash_dir).map_err(|e| e.to_string())?
+        } else {
+            Removal {
+                forgotten: removal::forget(&conn, &ids).map_err(|e| e.to_string())?,
+                ..Default::default()
+            }
+        }
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(out)
+}
+
+/// Empty the library. Watched folders are kept, so the next scan refills from
+/// whatever is still being watched — the interface says so before asking.
+#[tauri::command]
+pub fn clear_library(app: AppHandle, db: State<Db>) -> Result<usize, String> {
+    let n = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        removal::clear_library(&conn).map_err(|e| e.to_string())?
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(n)
 }

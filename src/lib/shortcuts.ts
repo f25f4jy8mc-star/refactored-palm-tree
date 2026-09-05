@@ -26,7 +26,8 @@ export type ShortcutId =
   | "selectAll"
   | "clearSelection"
   | "stepNext"
-  | "stepPrev";
+  | "stepPrev"
+  | "deleteSelection";
 
 export type Shortcut = {
   id: ShortcutId;
@@ -124,6 +125,14 @@ export const SHORTCUTS: Shortcut[] = [
     keys: "Esc",
     match: (e) => e.key === "Escape" && bare(e),
   },
+  {
+    id: "deleteSelection",
+    label: "Remove the selection from the library",
+    keys: "⌫",
+    // Backspace and Delete both, because which one "deletes" is a matter of
+    // which keyboard you are on.
+    match: (e) => (e.key === "Backspace" || e.key === "Delete") && !mod(e) && !e.altKey,
+  },
   // Build 17's fallback arrows: in a pane that owns no list of its own —
   // the Inspector, and later the note and graph views — ↑/↓ walk the order
   // the last list published, so the item under inspection can be stepped
@@ -152,13 +161,12 @@ export const LIST_OWNING_PANES = ["library", "scattered", "viewer"] as const;
  * implemented: a key that looks bound but does nothing is worse than one
  * that was never offered.
  *
- *   ⌘Z      undo            — no mutation history exists yet
- *   ⌫ / ⌦   delete selected — `delete` is a capability, but no delete
- *                             mutation exists in model/mutations.rs
+ *   ⌘Z      undo            — no mutation history exists yet, which is also
+ *                             why deleting asks before it acts
  *   ⌘N      create          — no create-node mutation exists
  *   ⌘⌥−     minimise bar    — the taskbar has no collapsed state yet
  */
-export const DEFERRED = ["⌘Z", "⌫", "⌘N", "⌘⌥−"] as const;
+export const DEFERRED = ["⌘Z", "⌘N", "⌘⌥−"] as const;
 
 /**
  * Resolve an event to at most one shortcut. First match wins; the matchers

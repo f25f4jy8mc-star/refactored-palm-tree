@@ -5,6 +5,7 @@ import { addSource, getViewPrefs, listRows, pickFolder, searchLibrary, setViewPr
 import { openTarget } from "../../lib/capabilities";
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
+import { nodeIdOf, nodeIdsOf, placementKeys } from "../../lib/placement";
 import * as Sel from "../../lib/selection";
 import type { GroupBy, Hit, ListRow, Row, SortBy } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
@@ -179,16 +180,24 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     () => (kindFilter ? rows.filter((r) => r.icon_kind === kindFilter || r.node_type === kindFilter) : rows),
     [rows, kindFilter],
   );
-  const visibleIds = useMemo(
-    () => (searching ? hits.map((h) => h.node.id) : visibleRows.map((r) => r.id)),
+  // Selection, the cursor and type-ahead run on **placements**, not on node
+  // ids. One item can be on screen twice — listed at the top level and again
+  // inside an expanded Collector — and keying on the id made both rows
+  // highlight and made the arrow keys jump to whichever came first. See
+  // lib/placement.ts.
+  const visibleKeys = useMemo(
+    () =>
+      searching
+        ? hits.map((h) => h.node.id)
+        : placementKeys(visibleRows.map((r) => ({ id: r.id, depth: r.depth }))),
     [searching, hits, visibleRows],
   );
   const names = useMemo(() => {
     const m = new Map<string, string>();
     if (searching) hits.forEach((h) => m.set(h.node.id, h.node.display_name));
-    else visibleRows.forEach((r) => m.set(r.id, r.display_name));
+    else visibleRows.forEach((r, i) => m.set(visibleKeys[i], r.display_name));
     return m;
-  }, [searching, hits, visibleRows]);
+  }, [searching, hits, visibleRows, visibleKeys]);
 
   function toggleExpanded(id: string) {
     setExpanded((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -219,25 +228,29 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     announceOpen(row);
   }
 
-  /** Hand the focused item and this view's rendered order up, so the
+  /** Hand the focused **item** and this view's rendered order up, so the
    * Inspector and Space follow what's focused here (G16 — the order is
-   * published live rather than copied, so it can't go stale). */
-  function publish(id: string | null) {
-    setActive(id, visibleIds);
+   * published live rather than copied, so it can't go stale).
+   *
+   * The cursor is a placement; what leaves this view is the node it refers
+   * to, deduplicated. Nothing outside a list has any use for placements. */
+  function publish(key: string | null) {
+    setActive(key ? nodeIdOf(key) : null, nodeIdsOf(visibleKeys));
   }
 
   // Tagging applies to a selection, not to the focused row alone (C2). The
   // Inspector shows one item and writes to all of them, and this is the only
-  // place that knows what "all of them" currently means.
+  // place that knows what "all of them" currently means. An item selected in
+  // two places is still one item to tag.
   useEffect(() => {
-    publishSelection(visibleIds.filter((id) => Sel.isSelected(selection, id)));
-  }, [selection, visibleIds, publishSelection]);
+    publishSelection(nodeIdsOf(visibleKeys.filter((k) => Sel.isSelected(selection, k))));
+  }, [selection, visibleKeys, publishSelection]);
 
-  function onRowClick(e: React.MouseEvent, id: string) {
-    if (e.shiftKey) setSelection((s) => Sel.rangeClick(s, id, visibleIds));
-    else if (e.metaKey || e.ctrlKey) setSelection((s) => Sel.toggleClick(s, id));
-    else setSelection(Sel.click(id));
-    publish(id);
+  function onRowClick(e: React.MouseEvent, key: string) {
+    if (e.shiftKey) setSelection((s) => Sel.rangeClick(s, key, visibleKeys));
+    else if (e.metaKey || e.ctrlKey) setSelection((s) => Sel.toggleClick(s, key));
+    else setSelection(Sel.click(key));
+    publish(key);
   }
 
   /** How many tiles fit per row right now, read the same way build17 did:
@@ -259,7 +272,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   function onKeyDown(e: React.KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
       e.preventDefault();
-      setSelection(Sel.selectAll(visibleIds));
+      setSelection(Sel.selectAll(visibleKeys));
       return;
     }
     // ⌘1/⌘2 switch layout, matching Finder/build17's view-mode shortcuts.
@@ -283,7 +296,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         const step =
           e.key === "ArrowDown" ? cols : e.key === "ArrowUp" ? -cols : e.key === "ArrowRight" ? 1 : -1;
         setSelection((s) => {
-          const next = Sel.moveCursor(s, visibleIds, step, e.shiftKey);
+          const next = Sel.moveCursor(s, visibleKeys, step, e.shiftKey);
           if (next.cursor) {
             landOn(next.cursor);
             publish(next.cursor);
@@ -294,16 +307,16 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       }
       case "Home":
         e.preventDefault();
-        if (visibleIds.length) {
-          setSelection(Sel.click(visibleIds[0]));
-          landOn(visibleIds[0]);
-          publish(visibleIds[0]);
+        if (visibleKeys.length) {
+          setSelection(Sel.click(visibleKeys[0]));
+          landOn(visibleKeys[0]);
+          publish(visibleKeys[0]);
         }
         return;
       case "End":
         e.preventDefault();
-        if (visibleIds.length) {
-          const last = visibleIds[visibleIds.length - 1];
+        if (visibleKeys.length) {
+          const last = visibleKeys[visibleKeys.length - 1];
           setSelection(Sel.click(last));
           landOn(last);
           publish(last);
@@ -314,12 +327,16 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         return;
       case "Enter": {
         e.preventDefault();
-        const id = selection.cursor;
+        const id = selection.cursor ? nodeIdOf(selection.cursor) : null;
         if (searching) {
           const hit = hits.find((h) => h.node.id === id);
           if (hit) announceOpen(hit.node);
         } else {
-          const row = rows.find((r) => r.id === id);
+          // The row under the cursor, not merely the first row with this id:
+          // the same item can be listed twice and only one of them is where
+          // the cursor actually is.
+          const at = visibleKeys.indexOf(selection.cursor ?? "");
+          const row = at === -1 ? rows.find((r) => r.id === id) : visibleRows[at];
           if (row) openRow(row);
         }
         return;
@@ -331,7 +348,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
       const buf = typeAheadRef.current;
       buf.buffer = now - buf.at < 700 ? buf.buffer + e.key : e.key;
       buf.at = now;
-      const match = Sel.typeAhead(visibleIds, names, buf.buffer, selection.cursor);
+      const match = Sel.typeAhead(visibleKeys, names, buf.buffer, selection.cursor);
       if (match) {
         setSelection(Sel.click(match));
         landOn(match);
@@ -551,19 +568,20 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
           tabIndex={0}
           onKeyDown={onKeyDown}
         >
-          {visibleRows.map((row) => {
+          {visibleRows.map((row, i) => {
+            const key = visibleKeys[i];
             const showHeader = row.group_key !== lastGroup && row.depth === 0;
             lastGroup = row.group_key;
-            const isSelected = Sel.isSelected(selection, row.id);
+            const isSelected = Sel.isSelected(selection, key);
             const tile = (
               <div
                 ref={(el) => {
-                  if (el) rowRefs.current.set(row.id, el);
-                  else rowRefs.current.delete(row.id);
+                  if (el) rowRefs.current.set(key, el);
+                  else rowRefs.current.delete(key);
                 }}
                 className={`row${isSelected ? " selected" : ""}`}
                 style={layout === "list" ? { paddingLeft: 20 + row.depth * 20 } : undefined}
-                onClick={(e) => onRowClick(e, row.id)}
+                onClick={(e) => onRowClick(e, key)}
                 onDoubleClick={() => openRow(row)}
               >
                 {layout === "list" &&

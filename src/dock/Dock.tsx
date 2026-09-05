@@ -25,11 +25,17 @@ export type PanelKind = "library" | "scattered" | "viewer" | "inspector";
 export type PanelParams = { kind: PanelKind; scopeId?: string };
 
 export type DockHandle = {
-  /** Add a panel, or focus it if one of this kind is already open. A
-   * `scopeId` retargets an existing panel of that kind rather than piling
-   * up a second one — the old build's "retargetViewer", which is what
-   * stops every double-click opening another tab. */
-  open: (kind: PanelKind, title: string, scopeId?: string) => void;
+  /** Add a panel.
+   *
+   * Two callers, two behaviours, and the difference is deliberate:
+   *
+   *   * the **rail** always opens a new tab (`fresh`), because that is what a
+   *     view switcher is for — you ask for a Library and you get one, rather
+   *     than being thrown to a Library that already exists somewhere in the
+   *     layout;
+   *   * **opening a collector** retargets the Viewer that is already open,
+   *     so double-clicking through folders doesn't pile up tabs. */
+  open: (kind: PanelKind, title: string, scopeId?: string, fresh?: boolean) => void;
   /** Close the active panel. */
   closeActive: () => void;
   /** Split the active panel's group, right or below. */
@@ -129,23 +135,29 @@ export default function Dock({ renderPanel, onActivePanelChange, onReady }: {
         onActivePanelChange(e.panel?.title ?? null, (e.panel?.params as PanelParams | undefined)?.kind ?? null),
       );
 
-      const open: DockHandle["open"] = (kind, title, scopeId) => {
-        // Prefer a panel of this kind that's already open — including one
-        // created by a split, whose id is suffixed. Retargeting it is what
-        // keeps double-clicking a folder from piling up tabs.
-        const existing =
-          event.api.getPanel(kind) ??
-          event.api.panels.find((p) => (p.params as PanelParams | undefined)?.kind === kind);
-        if (existing) {
-          if (scopeId !== undefined) {
-            existing.api.updateParameters({ kind, scopeId });
-            existing.api.setTitle(title);
+      const open: DockHandle["open"] = (kind, title, scopeId, fresh) => {
+        if (!fresh) {
+          // Prefer a panel of this kind that's already open — including one
+          // created by a split, whose id is suffixed. Retargeting it is what
+          // keeps double-clicking a folder from piling up tabs.
+          const existing =
+            event.api.getPanel(kind) ??
+            event.api.panels.find((p) => (p.params as PanelParams | undefined)?.kind === kind);
+          if (existing) {
+            if (scopeId !== undefined) {
+              existing.api.updateParameters({ kind, scopeId });
+              existing.api.setTitle(title);
+            }
+            existing.api.setActive();
+            return;
           }
-          existing.api.setActive();
-          return;
         }
+        // Panel ids must be unique, so only the first of a kind can hold the
+        // bare name. Everything after it is suffixed, and `open` finds those
+        // by their params rather than by guessing at the id.
+        const taken = event.api.getPanel(kind) !== undefined;
         event.api.addPanel<PanelParams>({
-          id: kind,
+          id: taken ? `${kind}~${Date.now()}` : kind,
           component: "panel",
           title,
           params: { kind, scopeId },

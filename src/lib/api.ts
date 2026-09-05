@@ -10,6 +10,8 @@ import type {
   ListOptions,
   ListPage,
   Recheck,
+  RemovalPreview,
+  RemovalResult,
   ScanReport,
   Source,
   Tag,
@@ -54,8 +56,11 @@ export function addSource(path: string): Promise<ScanReport> {
   return invoke("add_source", { path });
 }
 
-export function removeSource(id: string): Promise<void> {
-  return invoke("remove_source", { id });
+/** Stop watching a folder. `forgetItems` false keeps everything indexed from
+ * it — tags, links and notes are the user's work. True forgets those rows;
+ * it never touches a file. */
+export function removeSource(id: string, forgetItems = false): Promise<number> {
+  return invoke("remove_source", { id, forgetItems });
 }
 
 export function setSourceEnabled(id: string, enabled: boolean): Promise<void> {
@@ -168,4 +173,23 @@ export function addRemoteItem(url: string, title: string | null): Promise<string
 /** Re-examine everything not currently present, without a full walk. */
 export function recheckAvailability(): Promise<Recheck> {
   return invoke("recheck_availability");
+}
+
+/* ------------------------------------------------------------ removal */
+
+export function previewRemoval(ids: string[]): Promise<RemovalPreview> {
+  return invoke("preview_removal", { ids });
+}
+
+/** `trashFiles` false forgets the rows only, so a file still inside a watched
+ * folder returns on the next scan as a new item with none of its tags. True
+ * moves the file into Archiva's trash first, which is outside every watched
+ * folder and still on disk. */
+export function deleteItems(ids: string[], trashFiles: boolean): Promise<RemovalResult> {
+  return invoke("delete_items", { ids, trashFiles });
+}
+
+/** Empty the library. Watched folders are kept, so a re-index refills it. */
+export function clearLibrary(): Promise<number> {
+  return invoke("clear_library");
 }

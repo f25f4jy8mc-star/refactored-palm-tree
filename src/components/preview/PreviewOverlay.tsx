@@ -1,11 +1,11 @@
 // Quick Look. Space opens it on whatever is focused, Space or Escape
-// closes it, ←/→ step through the siblings of the list it was opened from,
-// I toggles the info panel and F fills the pane — Build 17's bindings.
+// closes it, I toggles the info panel and F fills the pane.
 //
-// The sibling order arrives live from `useActiveItem` rather than as a
-// copied array (G16): a snapshot goes stale the moment the underlying list
-// re-sorts or a scan adds a row, which is exactly how the old build's
-// preview ended up walking an order the screen no longer showed.
+// It shows what the view behind it has selected, and nothing else. Stepping
+// through items is that view's job: ←/→ pass straight through to it, its
+// cursor moves, and this overlay follows the active item. Giving the preview
+// its own next-and-previous meant two ideas of "the current item", and the
+// list and the preview drifted apart the moment either one was touched.
 //
 // What it can draw is decided by capability, never by file extension: an
 // image previews, a PDF or a video says plainly that its viewer isn't
@@ -30,10 +30,10 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
   const [info, setInfo] = useState(false);
   const [filled, setFilled] = useState(false);
   const [failed, setFailed] = useState(false);
-  // Reads the active item rather than a frozen id: ←/→ move the active
-  // item, and everything following it — this overlay and the Inspector
-  // behind it — moves together. Two ideas of "the current item" is the
-  // seam the old build's inspector/preview desync lived in.
+  // Reads the active item rather than a frozen id, so when the list behind
+  // moves its cursor, this overlay and the Inspector move with it. One idea
+  // of "the current item" — the seam the old build's inspector/preview
+  // desync lived in.
   const { id, step, setActive } = useActiveItem();
 
   useEffect(() => {
@@ -42,6 +42,9 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
     nodeDetail(id).then(setDetail).catch(() => setDetail(null));
   }, [id]);
 
+  // The bar's ‹ and › move the same active item the list publishes, so a
+  // click and an arrow key end up in the same place. They are a convenience
+  // for the mouse, not a second navigation model.
   const navigate = useCallback(
     (delta: number) => {
       const next = step(delta);
@@ -69,11 +72,12 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
         onClose();
         return;
       }
-      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-        consume();
-        navigate(e.key === "ArrowRight" ? 1 : -1);
-        return;
-      }
+      // Arrows are deliberately *not* consumed. The overlay shows whatever
+      // the view behind it has selected, so moving through items is the
+      // view's job — its cursor moves, it publishes the new active item, and
+      // this overlay follows. Handling them here as well gave the preview a
+      // second idea of "next", which is how it and the list ended up on
+      // different items.
       if (e.key.toLowerCase() === "i") {
         consume();
         setInfo((v) => !v);

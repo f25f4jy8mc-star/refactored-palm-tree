@@ -10,6 +10,7 @@ import { LibraryView } from "./components/library/LibraryView";
 import { ViewerPane } from "./components/viewer/ViewerPane";
 import { InspectorView } from "./components/inspector/InspectorView";
 import { PreviewOverlay } from "./components/preview/PreviewOverlay";
+import { DeleteDialog } from "./components/removal/DeleteDialog";
 import { SourcesFlyout } from "./components/sources/SourcesFlyout";
 import { TagsFlyout } from "./components/tags/TagsFlyout";
 
@@ -18,6 +19,7 @@ function Shell() {
   const [activeKind, setActiveKind] = useState<PanelKind | null>("library");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [flyout, setFlyout] = useState<Flyout | null>(null);
+  const [deleting, setDeleting] = useState<string[] | null>(null);
   const active = useActiveItem();
   const activeId = active.id;
   // The provider hands out a fresh object every render on purpose (it is
@@ -88,6 +90,17 @@ function Shell() {
           e.preventDefault();
           dockRef.current?.cycleGroup(-1);
           return;
+        case "deleteSelection": {
+          // Whatever the focused list has selected — the same list the
+          // Inspector tags, so what gets removed is what you can see is
+          // chosen. The dialog does the counting and the asking.
+          if (isTyping(e)) return;
+          const ids = activeRef.current.selection;
+          if (ids.length === 0 || deleting) return;
+          e.preventDefault();
+          setDeleting(ids);
+          return;
+        }
         case "stepNext":
         case "stepPrev": {
           // Only for a pane with no list of its own; a Library or Viewer
@@ -111,14 +124,16 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, previewOpen, activeKind]);
+  }, [activeId, previewOpen, activeKind, deleting]);
 
   return (
     <div className="shell" onClick={() => flyout && setFlyout(null)}>
       <Rail
         activeKind={activeKind}
         flyout={flyout}
-        onOpen={(kind, title) => dockRef.current?.open(kind, title)}
+        // The rail adds a tab of that kind; it never jumps to one already
+        // open. Two Library panes side by side is a layout, not a mistake.
+        onOpen={(kind, title) => dockRef.current?.open(kind, title, undefined, true)}
         onToggleFlyout={(which) => setFlyout((f) => (f === which ? null : which))}
       />
       {flyout === "sources" && <SourcesFlyout onClose={() => setFlyout(null)} />}
@@ -134,6 +149,18 @@ function Shell() {
         <TaskBar />
       </div>
       {previewOpen && activeId && <PreviewOverlay onClose={() => setPreviewOpen(false)} />}
+      {deleting && (
+        <DeleteDialog
+          ids={deleting}
+          onClose={(removed) => {
+            setDeleting(null);
+            // What was showing is gone, so nothing should still be pointing
+            // at it — a stale active id leaves the Inspector describing a row
+            // that no longer exists.
+            if (removed > 0) activeRef.current.setActive(null);
+          }}
+        />
+      )}
     </div>
   );
 }

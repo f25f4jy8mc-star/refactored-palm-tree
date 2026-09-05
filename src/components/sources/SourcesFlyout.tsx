@@ -7,13 +7,27 @@
 //   * Re-index always covers every enabled source in one pass. It can't
 //     be per-folder: a scan finishes by marking everything it didn't see
 //     as missing, so a partial walk would declare the skipped folders gone.
-//   * Stop watching keeps the items. Their tags, links and notes are the
-//     user's work; unwatching a folder stops it being refreshed, it does
-//     not throw that away.
+//   * Stop watching keeps the items by default. Their tags, links and notes
+//     are the user's work; unwatching a folder stops it being refreshed, it
+//     does not throw that away. Holding ⌥ while clicking ✕ forgets them too,
+//     which is the answer to "I unwatched everything and the content is
+//     still here" — it was doing exactly what it said, and there was no way
+//     to ask for the other thing.
+//   * Empty library is the blunt version of that: every item goes, the
+//     watched folders stay. Which means a re-index brings it all back, and
+//     the button says so before it asks.
 
 import { useCallback, useEffect, useState } from "react";
 
-import { addSource, listSources, pickFolder, removeSource, rescan, setSourceEnabled } from "../../lib/api";
+import {
+  addSource,
+  clearLibrary,
+  listSources,
+  pickFolder,
+  removeSource,
+  rescan,
+  setSourceEnabled,
+} from "../../lib/api";
 import { useArchivaChanged } from "../../lib/events";
 import type { Source } from "../../lib/types";
 
@@ -21,6 +35,9 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Emptying the library is not undoable, so it asks once rather than
+  // firing off a click that lands next to an unrelated ✕.
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -88,8 +105,16 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
             <span className="source-count">{s.item_count}</span>
             <button
               className="btn quiet"
-              title="Stop watching — indexed items remain"
-              onClick={() => run("Removing…", () => removeSource(s.id))}
+              title={
+                "Stop watching — indexed items remain.\n" +
+                "Hold ⌥ to forget its items as well (files are never touched)."
+              }
+              onClick={(e) =>
+                run(
+                  e.altKey ? "Removing and forgetting…" : "Removing…",
+                  () => removeSource(s.id, e.altKey),
+                )
+              }
             >
               ✕
             </button>
@@ -109,6 +134,44 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
         >
           Re-index
         </button>
+      </div>
+
+      <div className="flyout-danger">
+        {confirmClear ? (
+          <>
+            <p className="hint">
+              Every indexed item goes — tags, links and notes with them. Files on disk are not
+              touched, and the folders above stay watched, so a re-index brings the items back
+              without what you had added to them.
+            </p>
+            <div className="flyout-actions">
+              <button className="btn" onClick={() => setConfirmClear(false)} disabled={!!busy}>
+                Cancel
+              </button>
+              <button
+                className="btn primary"
+                onClick={() =>
+                  run("Emptying…", async () => {
+                    await clearLibrary();
+                    setConfirmClear(false);
+                  })
+                }
+                disabled={!!busy}
+              >
+                Empty the library
+              </button>
+            </div>
+          </>
+        ) : (
+          <button
+            className="btn quiet"
+            onClick={() => setConfirmClear(true)}
+            disabled={!!busy}
+            title="Remove every indexed item. Files are not touched."
+          >
+            Empty library…
+          </button>
+        )}
       </div>
 
       <div className="flyout-status">
