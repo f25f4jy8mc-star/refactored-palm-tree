@@ -44,8 +44,6 @@ export interface ListPage {
   sort: string;
 }
 
-export type Shape = "source" | "hierarchy";
-
 export type GroupBy = "type" | "health" | "month" | "none";
 export type SortBy = "name" | "date" | "captured" | "size" | "health";
 
@@ -56,10 +54,6 @@ export interface ListOptions {
   descending: boolean;
   expanded: string[];
   query: string | null;
-  /** `source` — every item once, folders left out. `hierarchy` — the tree,
-   * rooted at what nothing contains, nesting an expanded folder's members
-   * however deep they go. */
-  shape?: Shape;
 }
 
 /** `p_detail`'s node shape — also what a search `Hit` carries (§3, `Row`). */
@@ -92,7 +86,8 @@ export interface ViewPrefs {
   sort: string | null;
   group_by: string | null;
   density: string | null;
-  /** `source` or `hierarchy` — which way the Library is being read. */
+  /** Unused since the Library became one flat listing. The column stays
+   * because it is written, not because anything reads it. */
   shape: string | null;
 }
 

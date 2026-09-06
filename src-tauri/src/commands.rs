@@ -38,10 +38,6 @@ fn default_group_by() -> String {
 fn default_sort() -> String {
     "name".into()
 }
-fn default_shape() -> String {
-    "source".into()
-}
-
 /// Mirrors `model::projections::ListOptions`, field for field, so the model
 /// module stays exactly as delivered and only this DTO knows about JSON.
 #[derive(Debug, Deserialize)]
@@ -59,12 +55,6 @@ pub struct ListRowsArgs {
     pub expanded: Vec<String>,
     #[serde(default)]
     pub query: Option<String>,
-    /// `source` — every item once, folders left out. `hierarchy` — the tree,
-    /// rooted at what nothing contains, nesting an expanded folder's members
-    /// however deep they go. Two ways of reading one library, and the pane
-    /// says which it wants rather than each guessing.
-    #[serde(default = "default_shape")]
-    pub shape: String,
 }
 
 impl From<ListRowsArgs> for ListOptions {
@@ -80,16 +70,13 @@ impl From<ListRowsArgs> for ListOptions {
     }
 }
 
+/// `p_rows`, sectioned. One listing shape: the library is flat, and
+/// hierarchy is something you go *into* a collector to read (`tree_columns`).
 #[tauri::command]
 pub fn list_rows(db: State<Db>, args: ListRowsArgs) -> Result<ListPage, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let shape = args.shape.clone();
     let opts: ListOptions = args.into();
-    match shape.as_str() {
-        "hierarchy" => rowtree::hierarchy(&conn, &opts),
-        _ => rowtree::source(&conn, &opts),
-    }
-    .map_err(|e| e.to_string())
+    rowtree::source(&conn, &opts).map_err(|e| e.to_string())
 }
 
 /// `model::scan::ScanReport` carries no `Serialize` impl — the model crate is

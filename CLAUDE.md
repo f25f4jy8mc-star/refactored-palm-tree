@@ -69,7 +69,7 @@ harness from that. If the frontend asks for something the fixture has no
 recorded answer for, that is a disagreement to surface, not a gap to fill in.
 
 Frontend logic that can be pulled out into a pure module gets a vitest test
-instead — see `src/lib/selection.ts`, `placement.ts`, `expansion.ts`.
+instead — see `src/lib/selection.ts`, `sections.ts`.
 
 ## Layout
 

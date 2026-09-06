@@ -1,62 +1,96 @@
-//! The Library as a tree, rather than as everything at once.
+//! The Library's listing: everything you have, once, in sections by kind.
 //!
-//! `p_rows` unscoped returns every node in the library, and inlines a
-//! collector's members beneath it when that collector is expanded. Both are
-//! correct for a flat grid — "show me everything I have" — and together they
-//! are wrong for a list with disclosure triangles:
+//! The Library used to offer a second shape — the folder tree, one branch
+//! open at a time — and that is gone. A tree asks two questions at once
+//! ("what do I have" and "where does it sit") and answers neither cleanly:
+//! the same photograph appeared at the top level *and* under its folder,
+//! expansion needed disclosure state the grid had nowhere to put, and the
+//! arrow keys had to mean two different things depending on the shape.
 //!
-//!   * a photograph inside a folder is listed at the top level **as well as**
-//!     under its folder, so expanding looks like it duplicated the contents;
-//!   * collapsing then appears to do nothing, because the top-level copy is
-//!     still there;
-//!   * and expansion only ever went one level deep, because `p_rows` inlines
-//!     children but never the children's children.
+//! So: hierarchy lives in a collector, where it is the whole point and a
+//! Miller cascade reads it like a filesystem. The Library is flat. A folder
+//! is not scaffolding to be hidden here — it is one of the things you have,
+//! and it gets a section of its own next to the images and the boards.
 //!
-//! So this module assembles the tree instead, reusing the projection for
-//! every listing it needs rather than writing a second query: the root is the
-//! nodes nothing contains — the same rule `p_tree` uses for its first column —
-//! and each expanded collector's members come from `p_rows` scoped to it.
-//! Grouping, sorting, health and capabilities all still arrive decided; the
-//! only thing added here is the shape.
-//!
-//! A grid still asks for the flat listing. Two shapes, one projection, and
-//! the choice is made by the pane rather than by a second copy of the data.
-
-use std::collections::HashSet;
+//! What this module adds to `p_rows` is that sectioning. `type_group` in the
+//! projection files every collector under one heading, which was right when
+//! the tree carried the distinction and is not now: a board you arranged and
+//! a folder mirrored from disk behave differently and belong apart. The split
+//! is made here rather than in a view, so two views cannot disagree about it
+//! (rule 1) — and here rather than in `projections.rs`, which is delivered
+//! and takes additive changes only.
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
-use super::projections::{self, ListOptions, ListPage, ListRow};
+use super::projections::{self, ListOptions, ListPage};
 
-/// How deep expansion may nest before we stop. A `contains` edge can point
-/// anywhere, including in a loop, and a loop would otherwise recurse until the
-/// stack ran out. The path check below catches direct cycles; this is the
-/// backstop for a chain that is merely absurd.
-const MAX_DEPTH: i64 = 24;
+/// The two headings `p_rows` does not know about, named once so the ordering
+/// below and the split above cannot drift apart.
+pub const BOARDS: (&str, &str) = ("collector.board", "Collector boards");
+pub const FOLDERS: (&str, &str) = ("collector.folder", "Collector folders");
 
-/// Every item, once, with the folder structure left out.
+/// The sections the Library is divided into, in the order they are drawn.
 ///
-/// The folders are structure rather than content — they say where things are,
-/// not what you have — so a listing of what you have does not repeat them.
-/// Collectors you made by hand stay: those are gatherings, and a gathering is
-/// something you have.
+/// `p_rows` already names the first six; the two collector sections are this
+/// module's refinement of its single "Collectors". `other` catches whatever
+/// conforms to nothing above it, and is last because it is the one heading
+/// that says nothing about what is under it.
+const SECTIONS: &[(&str, &str)] = &[
+    ("image", "Images"),
+    ("video", "Video"),
+    ("audio", "Audio"),
+    ("model", "3D"),
+    ("document", "Documents"),
+    // Notes are documents in the ordinary sense and not in this model's: they
+    // have their own node type and their own editor, so merging them into
+    // Documents here would be this view disagreeing with the model about what
+    // a note is.
+    ("note", "Notes"),
+    BOARDS,
+    FOLDERS,
+    ("other", "Other"),
+];
+
+fn section_rank(key: &str) -> usize {
+    SECTIONS
+        .iter()
+        .position(|(k, _)| *k == key)
+        .unwrap_or(SECTIONS.len())
+}
+
+/// Every item in the library, once, sectioned by what it is.
 pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     let page = projections::rows(conn, &source_opts(opts))?;
-    // Only when listing the whole library. Inside a folder the subfolders are
-    // its contents — dropping them there would list a folder's files and
-    // silently lose everything in the folders beside them.
-    let derived = if opts.scope.is_none() {
-        super::folders::derived_ids(conn)?
-    } else {
-        std::collections::HashSet::new()
-    };
-    let mut rows: Vec<ListRow> = page
-        .rows
-        .into_iter()
-        .filter(|r| !derived.contains(&r.id))
-        .collect();
+    let mut rows = page.rows;
+
+    // Only the type grouping is refined. Grouping by month or by health asks
+    // a different question, and splitting the collectors inside those would
+    // answer one it was not asked.
+    if page.group_by == "type" {
+        for row in rows.iter_mut() {
+            if row.group_key != "collector" {
+                continue;
+            }
+            // A collector with no recorded kind is a folder: that is what
+            // `contains` makes it, and a board is the one that had to be
+            // asked for.
+            let (key, label) = match collector_kind(conn, &row.id)?.as_deref() {
+                Some("board") => BOARDS,
+                _ => FOLDERS,
+            };
+            row.group_key = key.to_string();
+            row.group_label = label.to_string();
+        }
+        // Stable, so the sort `p_rows` applied inside each group survives:
+        // this only moves whole sections, and separates the boards from the
+        // folders without reordering either.
+        rows.sort_by_key(|r| section_rank(&r.group_key));
+    }
+
     for (i, row) in rows.iter_mut().enumerate() {
+        // The Library draws no depth. A row inlined by an expanded collector
+        // would arrive with one, and there is nothing here to read it.
         row.depth = 0;
         row.ordinal = i as i64;
     }
@@ -68,115 +102,18 @@ pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     })
 }
 
-/// The two sections a hierarchy is divided into, and why: a watched folder
-/// mirrors something on your disk and Archiva only reports it, while
-/// everything else in the tree is something made here. Mixing them makes the
-/// tree look like one filesystem you can edit anywhere in, and it isn't.
-pub const WATCHED: (&str, &str) = ("watched", "Watched folders");
-pub const MADE_HERE: (&str, &str) = ("archiva", "In Archiva");
-
-pub fn hierarchy(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
-    // The projection does the listing. `expanded` is cleared because the
-    // inlining it does is exactly what this module is replacing, and grouping
-    // is cleared because a tree's sections are watched-versus-made-here, not
-    // whatever a flat list would group by.
-    let base = projections::rows(conn, &ungrouped(opts, opts.scope.clone()))?;
-
-    // An unscoped tree starts at what nothing contains. A scoped one is
-    // already the inside of a collector, so its members are its roots.
-    let derived = super::folders::derived_ids(conn)?;
-    let roots: Vec<ListRow> = if opts.scope.is_some() {
-        base.rows
-    } else {
-        let held = contained(conn)?;
-        let mut roots: Vec<ListRow> = base
-            .rows
-            .into_iter()
-            .filter(|r| !held.contains(&r.id))
-            .collect();
-        for row in roots.iter_mut() {
-            let (key, label) = if derived.contains(&row.id) {
-                WATCHED
-            } else {
-                MADE_HERE
-            };
-            row.group_key = key.to_string();
-            row.group_label = label.to_string();
-        }
-        // Watched folders first: they are where the material comes from.
-        roots.sort_by_key(|r| u8::from(r.group_key != WATCHED.0));
-        roots
-    };
-
-    let mut out: Vec<ListRow> = Vec::with_capacity(roots.len());
-    let mut path: Vec<String> = Vec::new();
-    for row in roots {
-        push_with_children(conn, opts, row, 0, &mut path, &mut out)?;
-    }
-
-    // Ordinal is the row's index in the flattened page, and stays so.
-    for (i, row) in out.iter_mut().enumerate() {
-        row.ordinal = i as i64;
-    }
-
-    Ok(ListPage {
-        total: out.len(),
-        rows: out,
-        group_by: base.group_by,
-        sort: base.sort,
-    })
-}
-
-fn push_with_children(
-    conn: &Connection,
-    opts: &ListOptions,
-    mut row: ListRow,
-    depth: i64,
-    path: &mut Vec<String>,
-    out: &mut Vec<ListRow>,
-) -> Result<()> {
-    let id = row.id.clone();
-    let group_key = row.group_key.clone();
-    let group_label = row.group_label.clone();
-    row.depth = depth;
-    let expand = row.node_type == "collector"
-        && depth < MAX_DEPTH
-        && opts.expanded.iter().any(|e| *e == id)
-        // A collector reachable from inside itself would otherwise be drawn
-        // forever. Stopping at the repeat keeps the loop visible — the folder
-        // is still there, it just does not open a second time.
-        && !path.contains(&id);
-    out.push(row);
-    if !expand {
-        return Ok(());
-    }
-
-    path.push(id.clone());
-    let members = projections::rows(conn, &ungrouped(opts, Some(id)))?;
-    for mut child in members.rows {
-        // Children belong to the group their parent is drawn under, so an
-        // expanded folder cannot scatter its contents across headers it is
-        // not itself in.
-        child.group_key = group_key.clone();
-        child.group_label = group_label.clone();
-        push_with_children(conn, opts, child, depth + 1, path, out)?;
-    }
-    path.pop();
-    Ok(())
-}
-
-/// The same options, listing one scope with no inlining and no grouping —
-/// the tree supplies its own sections, and a folder's contents are already
-/// grouped by being in that folder.
-fn ungrouped(opts: &ListOptions, scope: Option<String>) -> ListOptions {
-    ListOptions {
-        scope,
-        group_by: "none".into(),
-        sort: opts.sort.clone(),
-        descending: opts.descending,
-        expanded: Vec::new(),
-        query: opts.query.clone(),
-    }
+/// `board` or `folder`, from the row the collector table already holds. None
+/// when the node is not a collector, or is one nothing recorded a kind for.
+fn collector_kind(conn: &Connection, id: &str) -> Result<Option<String>> {
+    let kind = conn
+        .query_row(
+            "SELECT collector_kind FROM collector WHERE node_id = ?1",
+            rusqlite::params![id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(kind)
 }
 
 /// Source keeps whatever grouping the pane asked for — it is a flat listing,
@@ -192,14 +129,6 @@ fn source_opts(opts: &ListOptions) -> ListOptions {
     }
 }
 
-/// Every node held by at least one collector.
-fn contained(conn: &Connection) -> Result<HashSet<String>> {
-    let mut q = conn.prepare("SELECT DISTINCT source_id FROM edge WHERE kind = 'contains'")?;
-    let out = q
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<std::result::Result<HashSet<_>, _>>()?;
-    Ok(out)
-}
 
 #[cfg(test)]
 mod tests {
@@ -237,6 +166,29 @@ mod tests {
         .unwrap();
     }
 
+    fn board(c: &Connection, id: &str, name: &str) {
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name)
+             VALUES (?1,'collector','app.archiva.collector.board','[\"app.archiva.collector.board\"]',?2)",
+            params![id, name],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id, collector_kind) VALUES (?1,'board')",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    fn note(c: &Connection, id: &str, name: &str) {
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,locator)
+             VALUES (?1,'note','net.daringfireball.markdown','[\"net.daringfireball.markdown\"]',?2,?1)",
+            params![id, name],
+        )
+        .unwrap();
+    }
+
     fn contains(c: &Connection, item: &str, folder: &str) {
         c.execute(
             "INSERT INTO edge(id,source_id,target_id,kind) VALUES (?1,?2,?3,'contains')",
@@ -245,22 +197,17 @@ mod tests {
         .unwrap();
     }
 
+    /// The Library's own options: sectioned by type, sorted by name — what
+    /// the pane actually sends.
     fn opts(expanded: &[&str]) -> ListOptions {
         ListOptions {
             scope: None,
-            group_by: "none".into(),
+            group_by: "type".into(),
             sort: "name".into(),
             descending: false,
             expanded: expanded.iter().map(|s| s.to_string()).collect(),
             query: None,
         }
-    }
-
-    fn shape(page: &ListPage) -> Vec<(String, i64)> {
-        page.rows
-            .iter()
-            .map(|r| (r.display_name.clone(), r.depth))
-            .collect()
     }
 
     /// Writes the exact rows the real backend produces for a real scanned
@@ -438,15 +385,6 @@ mod tests {
             }
         }
 
-        let mut hierarchy = serde_json::Map::new();
-        for spine in &spines {
-            let key = spine.join(",");
-            hierarchy.insert(
-                key,
-                serde_json::to_value(hierarchy_page(&c, &base(spine.clone()))).unwrap(),
-            );
-        }
-
         // The cascade from every start the walkthrough can reach: from the
         // library root, and from each folder as its own root — the case that
         // came up blank and the reason `tree_from` takes one. `workspace` is
@@ -530,7 +468,6 @@ mod tests {
             "ids": ids,
             "source": source_page,
             "sourceByType": source_by_type,
-            "hierarchy": hierarchy,
             "scoped": scoped,
             "workspace": workspace,
             "viewerRoot": viewer_root,
@@ -541,96 +478,142 @@ mod tests {
         eprintln!("fixture written to {out}");
     }
 
-    fn hierarchy_page(c: &Connection, o: &ListOptions) -> ListPage {
-        hierarchy(c, o).unwrap()
+    fn sections(page: &ListPage) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for row in &page.rows {
+            if out.last().map(String::as_str) != Some(row.group_label.as_str()) {
+                out.push(row.group_label.clone());
+            }
+        }
+        out
     }
 
     #[test]
-    fn the_root_holds_only_what_nothing_contains() {
+    fn a_folder_is_something_you_have_rather_than_scaffolding_to_hide() {
+        // It used to be dropped from the listing, because the tree beside it
+        // was where folders lived. There is no tree now: a folder is one of
+        // the things in the library, in a section of its own.
         let c = db();
+        board(&c, "b", "My board");
         folder(&c, "f1", "Trips");
-        item(&c, "a", "alpha.jpg");
         item(&c, "p", "photo.jpg");
         contains(&c, "p", "f1");
 
-        let page = hierarchy(&c, &opts(&[])).unwrap();
-        // Sorted by name, so alpha comes before Trips.
+        let page = source(&c, &opts(&[])).unwrap();
         assert_eq!(
-            shape(&page),
-            vec![("alpha.jpg".into(), 0), ("Trips".into(), 0)],
-            "the photo is inside the folder, so it is not also at the top"
+            page.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["photo.jpg", "My board", "Trips"]
         );
+        assert_eq!(page.total, 3);
     }
 
     #[test]
-    fn expanding_adds_the_contents_once_and_collapsing_takes_them_away() {
-        // The reported bug: expanding appeared to duplicate, and collapsing
-        // appeared to do nothing, because the contents were listed at the top
-        // level as well.
+    fn boards_and_folders_are_separate_sections() {
+        // p_rows files both under one "Collectors", which was right while the
+        // tree carried the distinction. A board you arranged and a folder
+        // mirrored from disk are different things to go looking for.
+        let c = db();
+        board(&c, "b1", "Moodboard");
+        folder(&c, "f1", "Trips");
+        item(&c, "p", "photo.jpg");
+
+        let page = source(&c, &opts(&[])).unwrap();
+        assert_eq!(sections(&page), vec!["Images", "Collector boards", "Collector folders"]);
+        let keys: Vec<&str> = page.rows.iter().map(|r| r.group_key.as_str()).collect();
+        assert_eq!(keys, vec!["image", BOARDS.0, FOLDERS.0]);
+    }
+
+    #[test]
+    fn the_sections_come_in_a_fixed_order_whatever_the_library_holds() {
         let c = db();
         folder(&c, "f1", "Trips");
-        item(&c, "a", "alpha.jpg");
+        board(&c, "b1", "Moodboard");
         item(&c, "p", "photo.jpg");
-        contains(&c, "p", "f1");
+        note(&c, "n1", "thoughts");
 
-        let open = hierarchy(&c, &opts(&["f1"])).unwrap();
+        let page = source(&c, &opts(&[])).unwrap();
         assert_eq!(
-            shape(&open),
-            vec![
-                ("alpha.jpg".into(), 0),
-                ("Trips".into(), 0),
-                ("photo.jpg".into(), 1)
-            ]
+            sections(&page),
+            vec!["Images", "Notes", "Collector boards", "Collector folders"],
+            "declared order, not the order things happened to be added"
         );
-        let names: Vec<&String> = open.rows.iter().map(|r| &r.display_name).collect();
-        assert_eq!(
-            names.iter().filter(|n| **n == "photo.jpg").count(),
-            1,
-            "once, not twice"
-        );
-
-        let shut = hierarchy(&c, &opts(&[])).unwrap();
-        assert_eq!(shut.rows.len(), 2, "collapsing really removes them");
     }
 
     #[test]
-    fn expansion_nests_as_deep_as_it_is_asked_to() {
-        // p_rows inlines one level only; a tree has to go all the way down.
+    fn the_sort_inside_a_section_survives_the_resectioning() {
         let c = db();
-        folder(&c, "f1", "Trips");
-        folder(&c, "f2", "Bergamo");
-        item(&c, "p", "photo.jpg");
-        contains(&c, "f2", "f1");
-        contains(&c, "p", "f2");
+        folder(&c, "f2", "Zermatt");
+        folder(&c, "f1", "Alps");
+        board(&c, "b1", "Moodboard");
 
-        let page = hierarchy(&c, &opts(&["f1", "f2"])).unwrap();
+        let page = source(&c, &opts(&[])).unwrap();
         assert_eq!(
-            shape(&page),
-            vec![
-                ("Trips".into(), 0),
-                ("Bergamo".into(), 1),
-                ("photo.jpg".into(), 2)
-            ]
+            page.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["Moodboard", "Alps", "Zermatt"],
+            "boards first, and the folders still in name order"
         );
     }
 
     #[test]
-    fn expanding_the_inner_folder_alone_leaves_the_outer_one_shut() {
+    fn a_collector_with_no_recorded_kind_is_a_folder() {
+        // `contains` is what makes a collector; a board is the one that had
+        // to be asked for. An unknown kind must still land in a section.
         let c = db();
-        folder(&c, "f1", "Trips");
-        folder(&c, "f2", "Bergamo");
-        item(&c, "p", "photo.jpg");
-        contains(&c, "f2", "f1");
-        contains(&c, "p", "f2");
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name)
+             VALUES ('c','collector','app.archiva.collector','[]','Unlabelled')",
+            [],
+        )
+        .unwrap();
 
-        let page = hierarchy(&c, &opts(&["f2"])).unwrap();
-        assert_eq!(shape(&page), vec![("Trips".into(), 0)]);
+        let page = source(&c, &opts(&[])).unwrap();
+        assert_eq!(page.rows[0].group_key, FOLDERS.0);
     }
 
     #[test]
-    fn one_item_in_two_folders_appears_under_each_of_them() {
-        // Still legitimate, and still one node. The view tells the two rows
-        // apart by placement, not by id.
+    fn grouping_by_something_else_is_left_alone() {
+        // Splitting the collectors inside a health or month grouping would
+        // answer a question that grouping was not asked.
+        let c = db();
+        board(&c, "b1", "Moodboard");
+        folder(&c, "f1", "Trips");
+
+        let mut o = opts(&[]);
+        o.group_by = "health".into();
+        let page = source(&c, &o).unwrap();
+        assert!(
+            page.rows.iter().all(|r| r.group_key != BOARDS.0 && r.group_key != FOLDERS.0),
+            "{:?}",
+            page.rows.iter().map(|r| r.group_key.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_scoped_listing_is_the_inside_of_one_collector() {
+        // The Viewer's flat modes ask for this. Sectioning still applies —
+        // it is the same listing, of fewer things.
+        let c = db();
+        folder(&c, "disk", "Photos");
+        folder(&c, "sub", "Trips");
+        item(&c, "p", "photo.jpg");
+        item(&c, "o", "outside.jpg");
+        contains(&c, "sub", "disk");
+        contains(&c, "p", "disk");
+
+        let mut o = opts(&[]);
+        o.scope = Some("disk".into());
+        let inside = source(&c, &o).unwrap();
+        assert_eq!(
+            inside.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["photo.jpg", "Trips"],
+            "what Photos holds, and nothing beside it"
+        );
+    }
+
+    #[test]
+    fn nothing_is_listed_twice() {
+        // The duplication that made the tree unreadable: an item appeared at
+        // the top level and again under its folder. Flat, it cannot.
         let c = db();
         folder(&c, "f1", "Trips");
         folder(&c, "f2", "Work");
@@ -638,194 +621,29 @@ mod tests {
         contains(&c, "p", "f1");
         contains(&c, "p", "f2");
 
-        let page = hierarchy(&c, &opts(&["f1", "f2"])).unwrap();
+        let page = source(&c, &opts(&[])).unwrap();
         assert_eq!(
-            shape(&page),
-            vec![
-                ("Trips".into(), 0),
-                ("photo.jpg".into(), 1),
-                ("Work".into(), 0),
-                ("photo.jpg".into(), 1)
-            ]
+            page.rows.iter().filter(|r| r.id == "p").count(),
+            1,
+            "one row per node, however many collectors hold it"
         );
     }
 
     #[test]
-    fn a_folder_that_contains_itself_is_drawn_once_rather_than_forever() {
-        let c = db();
-        folder(&c, "f1", "Trips");
-        folder(&c, "f2", "Inner");
-        contains(&c, "f2", "f1");
-        contains(&c, "f1", "f2"); // a loop
-
-        let page = hierarchy(&c, &opts(&["f1", "f2"])).unwrap();
-        // Nothing is uncontained, so nothing is a root — but the important
-        // part is that it terminates.
-        assert!(page.rows.len() < 10, "{:?}", shape(&page));
-    }
-
-    #[test]
-    fn a_scoped_tree_starts_at_that_collectors_members() {
-        let c = db();
-        folder(&c, "f1", "Trips");
-        folder(&c, "f2", "Bergamo");
-        item(&c, "p", "photo.jpg");
-        item(&c, "o", "outside.jpg");
-        contains(&c, "f2", "f1");
-        contains(&c, "p", "f2");
-
-        let mut o = opts(&["f2"]);
-        o.scope = Some("f1".into());
-        let page = hierarchy(&c, &o).unwrap();
-        assert_eq!(
-            shape(&page),
-            vec![("Bergamo".into(), 0), ("photo.jpg".into(), 1)],
-            "the pane is the inside of Trips; outside.jpg is not in it"
-        );
-    }
-
-    #[test]
-    fn the_tree_separates_watched_folders_from_what_was_made_here() {
-        let c = db();
-        // A folder the folder pass made, standing for something on disk.
-        c.execute(
-            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
-                              source_kind,locator)
-             VALUES ('disk','collector','app.archiva.virtual','[]','Photos',
-                     'app_generated','/photos')",
-            [],
-        )
-        .unwrap();
-        c.execute(
-            "INSERT INTO collector(node_id,collector_kind) VALUES ('disk','folder')",
-            [],
-        )
-        .unwrap();
-        // One made here: no locator, so the folder pass does not own it.
-        folder(&c, "mine", "My board");
-
-        let page = hierarchy(&c, &opts(&[])).unwrap();
-        let sections: Vec<(&str, &str)> = page
-            .rows
-            .iter()
-            .map(|r| (r.display_name.as_str(), r.group_key.as_str()))
-            .collect();
-        assert_eq!(
-            sections,
-            vec![("Photos", WATCHED.0), ("My board", MADE_HERE.0)],
-            "watched first, and never mixed"
-        );
-        assert_eq!(page.rows[0].group_label, WATCHED.1);
-    }
-
-    #[test]
-    fn a_folders_contents_stay_in_their_folders_section() {
-        let c = db();
-        c.execute(
-            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
-                              source_kind,locator)
-             VALUES ('disk','collector','app.archiva.virtual','[]','Photos',
-                     'app_generated','/photos')",
-            [],
-        )
-        .unwrap();
-        c.execute(
-            "INSERT INTO collector(node_id,collector_kind) VALUES ('disk','folder')",
-            [],
-        )
-        .unwrap();
-        item(&c, "p", "photo.jpg");
-        contains(&c, "p", "disk");
-
-        let page = hierarchy(&c, &opts(&["disk"])).unwrap();
-        assert!(page.rows.iter().all(|r| r.group_key == WATCHED.0));
-    }
-
-    #[test]
-    fn a_group_control_does_not_scatter_a_folders_contents() {
-        // Group-by belongs to Source. A tree asked to group by type would
-        // otherwise file a folder's contents under headers the folder is not
-        // itself in, which is unreadable.
+    fn every_row_is_flat_and_ordinals_are_its_position() {
         let c = db();
         folder(&c, "f1", "Trips");
         item(&c, "p", "photo.jpg");
         contains(&c, "p", "f1");
 
-        let mut o = opts(&["f1"]);
-        o.group_by = "type".into();
-        let page = hierarchy(&c, &o).unwrap();
-        let groups: Vec<&String> = page.rows.iter().map(|r| &r.group_key).collect();
-        assert_eq!(groups[0], groups[1]);
-    }
-
-    #[test]
-    fn ordinals_stay_the_rows_position_in_the_page() {
-        let c = db();
-        folder(&c, "f1", "Trips");
-        item(&c, "a", "alpha.jpg");
-        item(&c, "p", "photo.jpg");
-        contains(&c, "p", "f1");
-        let page = hierarchy(&c, &opts(&["f1"])).unwrap();
-        let ordinals: Vec<i64> = page.rows.iter().map(|r| r.ordinal).collect();
-        assert_eq!(ordinals, vec![0, 1, 2]);
-        assert_eq!(page.total, 3);
-    }
-
-    #[test]
-    fn a_scoped_source_listing_keeps_the_subfolders_inside_it() {
-        // The whole library leaves the folder scaffolding out; the inside of
-        // a folder cannot, or half its contents disappear.
-        let c = db();
-        c.execute(
-            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
-                              source_kind,locator)
-             VALUES ('disk','collector','app.archiva.collector.folder','[]','Photos',
-                     'app_generated','/photos')",
-            [],
-        )
-        .unwrap();
-        c.execute(
-            "INSERT INTO collector(node_id,collector_kind) VALUES ('disk','folder')",
-            [],
-        )
-        .unwrap();
-        c.execute(
-            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
-                              source_kind,locator)
-             VALUES ('sub','collector','app.archiva.collector.folder','[]','Trips',
-                     'app_generated','/photos/trips')",
-            [],
-        )
-        .unwrap();
-        c.execute(
-            "INSERT INTO collector(node_id,collector_kind) VALUES ('sub','folder')",
-            [],
-        )
-        .unwrap();
-        contains(&c, "sub", "disk");
-
-        let mut o = opts(&[]);
-        o.scope = Some("disk".into());
-        let inside = source(&c, &o).unwrap();
+        // `expanded` is what p_rows uses to inline a collector's members. The
+        // Library never sends it, and a row that arrived nested would have
+        // nowhere to be drawn.
+        let page = source(&c, &opts(&["f1"])).unwrap();
+        assert!(page.rows.iter().all(|r| r.depth == 0));
         assert_eq!(
-            inside.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
-            vec!["Trips"],
-            "a subfolder is part of what a folder holds"
+            page.rows.iter().map(|r| r.ordinal).collect::<Vec<_>>(),
+            (0..page.rows.len() as i64).collect::<Vec<_>>()
         );
-
-        let whole = source(&c, &opts(&[])).unwrap();
-        assert!(whole.rows.is_empty(), "and the library itself leaves them out");
-    }
-
-    #[test]
-    fn the_flat_listing_is_untouched_and_still_shows_everything() {
-        // The grid still wants "everything I have", and that is p_rows as
-        // delivered — this module is a second shape, not a replacement.
-        let c = db();
-        folder(&c, "f1", "Trips");
-        item(&c, "p", "photo.jpg");
-        contains(&c, "p", "f1");
-        let flat = projections::rows(&c, &opts(&[])).unwrap();
-        assert_eq!(flat.rows.len(), 2, "the folder and the photo");
     }
 }
