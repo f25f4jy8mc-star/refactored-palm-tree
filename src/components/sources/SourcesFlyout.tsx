@@ -7,10 +7,18 @@
 //   * Re-index always covers every enabled source in one pass. It can't
 //     be per-folder: a scan finishes by marking everything it didn't see
 //     as missing, so a partial walk would declare the skipped folders gone.
-//   * The tickbox includes or excludes a folder from what is *displayed*.
-//     Unticking hides everything under it — from the Library, the columns
-//     and search alike — and ticking it again brings the lot back with its
-//     tags intact. Nothing is scanned or forgotten either way.
+//   * The tickbox includes or excludes a folder from what is *displayed*,
+//     and it is staged: nothing moves until Refresh. That is what makes
+//     Refresh the moment the library changes, rather than content vanishing
+//     under the pointer as you work down a list. Unticking hides everything
+//     under it — from the Library, the columns and search alike — and
+//     ticking it again brings the lot back with its tags intact. Nothing is
+//     scanned or forgotten either way.
+//   * Displaying the linked folders is not staged, because nothing is
+//     indexed or forgotten by it: it only decides whether the folders
+//     themselves are drawn in the Library alongside what is in them. They
+//     get their own heading there — a folder you mirrored is not a collector
+//     you made.
 //   * Unlinking asks which of two things you mean, because they are not the
 //     same and neither is the obvious default: keep the links and tags you
 //     added to those items, or delete them with the folder. Files on disk
@@ -24,18 +32,23 @@ import { useCallback, useEffect, useState } from "react";
 import {
   addSource,
   clearLibrary,
+  getSettings,
+  isStaged,
   listSources,
   pickFolder,
   removeSource,
   rescan,
+  setShowLinkedFolders,
   setSourceEnabled,
+  tickOf,
 } from "../../lib/api";
 import { useArchivaChanged } from "../../lib/events";
-import type { Source } from "../../lib/types";
+import type { Settings, Source } from "../../lib/types";
 import { SpacesPanel } from "../spaces/SpacesPanel";
 
 export function SourcesFlyout({ onClose }: { onClose: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Emptying the library is not undoable, so it asks once rather than
@@ -48,7 +61,9 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
 
   const load = useCallback(async () => {
     try {
-      setSources(await listSources());
+      const [list, prefs] = await Promise.all([listSources(), getSettings()]);
+      setSources(list);
+      setSettings(prefs);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -80,6 +95,8 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
     }
   }
 
+  const staged = isStaged(sources);
+
   async function onAdd() {
     const dir = await pickFolder();
     if (!dir) return;
@@ -101,21 +118,35 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
 
       <ul className="source-list">
         {sources.map((s) => (
-          <li key={s.id} className={s.enabled ? "" : "off"}>
+          // `off` follows what is in effect, so the list keeps showing the
+          // library as it stands; `staged` marks the lines that a Refresh
+          // would change. The two are deliberately different marks.
+          <li
+            key={s.id}
+            className={[s.enabled ? "" : "off", s.pending_enabled === null ? "" : "staged"]
+              .filter(Boolean)
+              .join(" ")}
+          >
             <input
               type="checkbox"
-              checked={s.enabled}
+              checked={tickOf(s)}
               title={
-                s.enabled
-                  ? "Exclude this folder from what is displayed"
-                  : "Include this folder in what is displayed"
+                tickOf(s)
+                  ? "Exclude this folder from what is displayed, on the next Refresh"
+                  : "Include this folder in what is displayed, on the next Refresh"
               }
-              onChange={(e) => run("Updating…", () => setSourceEnabled(s.id, e.target.checked))}
+              onChange={(e) => run("Staging…", () => setSourceEnabled(s.id, e.target.checked))}
             />
             <span className="source-path" title={s.path}>
               {s.path}
             </span>
-            <span className="source-count">{s.item_count}</span>
+            {s.pending_enabled === null ? (
+              <span className="source-count">{s.item_count}</span>
+            ) : (
+              <span className="source-pending" title="Waiting on a Refresh">
+                {s.pending_enabled ? "will show" : "will hide"}
+              </span>
+            )}
             <button
               className="btn quiet"
               title="Unlink this folder"
@@ -127,23 +158,50 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
         ))}
       </ul>
 
-      {sources.some((s) => !s.enabled) && (
-        <p className="hint">
-          Unticked folders are hidden everywhere — the Library, the columns and
-          search. Their items, tags and links are untouched, and ticking them
-          back brings the lot back. Refresh re-reads the folders that are on.
+      {sources.length > 0 && (
+        <label className="source-option" title="Draw the folders themselves, not just what is in them">
+          <input
+            type="checkbox"
+            checked={settings?.showLinkedFolders ?? false}
+            disabled={!settings || !!busy}
+            onChange={(e) =>
+              run("Updating…", () => setShowLinkedFolders(e.target.checked))
+            }
+          />
+          <span>Display linked folders in the Library</span>
+        </label>
+      )}
+
+      {staged ? (
+        <p className="hint staged">
+          A tickbox changed. Nothing moves until you Refresh — that is the one
+          moment the library changes, rather than content going as you click.
         </p>
+      ) : (
+        sources.some((s) => !s.enabled) && (
+          <p className="hint">
+            Unticked folders are hidden everywhere — the Library, the columns and
+            search. Their items, tags and links are untouched, and ticking them
+            back brings the lot back. Refresh re-reads the folders that are on.
+          </p>
+        )
       )}
 
       <div className="flyout-actions">
-        <button className="btn primary" onClick={onAdd} disabled={!!busy}>
+        <button className={staged ? "btn" : "btn primary"} onClick={onAdd} disabled={!!busy}>
           Add Folder…
         </button>
         <button
-          className="btn"
+          className={staged ? "btn primary" : "btn"}
           onClick={() => run("Refreshing…", rescan)}
-          disabled={!!busy || sources.every((s) => !s.enabled)}
-          title="Walk every included folder and reconcile what changed"
+          // Available whenever there is something to apply, even when that
+          // something is switching the last folder off.
+          disabled={!!busy || (!staged && sources.every((s) => !s.enabled))}
+          title={
+            staged
+              ? "Apply the tickboxes, then walk every included folder"
+              : "Walk every included folder and reconcile what changed"
+          }
         >
           Refresh
         </button>

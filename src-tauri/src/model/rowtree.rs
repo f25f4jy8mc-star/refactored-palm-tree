@@ -25,10 +25,16 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::projections::{self, ListOptions, ListPage};
 
-/// The two headings `p_rows` does not know about, named once so the ordering
-/// below and the split above cannot drift apart.
+/// The three headings `p_rows` does not know about, named once so the
+/// ordering below and the split above cannot drift apart.
 pub const BOARDS: (&str, &str) = ("collector.board", "Collector boards");
+/// A folder you made here — a gathering, and a gathering is something you
+/// have.
 pub const FOLDERS: (&str, &str) = ("collector.folder", "Collector folders");
+/// A folder mirrored from one you linked. Not a collector you made, and not
+/// filed as one: it is a description of where some of your things sit, shown
+/// only when `settings::SHOW_LINKED_FOLDERS` says to.
+pub const LINKED: (&str, &str) = ("collector.linked", "Linked folders");
 
 /// The sections the Library is divided into, in the order they are drawn.
 ///
@@ -49,6 +55,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("note", "Notes"),
     BOARDS,
     FOLDERS,
+    LINKED,
     ("other", "Other"),
 ];
 
@@ -66,7 +73,18 @@ pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     // The predicate lives in `sources` so every listing hides the same
     // things; this is the reader that filters in Rust rather than in SQL.
     let hidden = super::sources::hidden_ids(conn)?;
-    let mut rows: Vec<_> = page.rows.into_iter().filter(|r| !hidden.contains(&r.id)).collect();
+    // The folders mirrored from what you linked. They are a description of
+    // where things sit rather than things you have, so the Library leaves
+    // them out unless asked — and when asked, files them under their own
+    // heading rather than among the collectors you made (`LINKED`).
+    let linked = super::folders::derived_ids(conn)?;
+    let show_linked = super::settings::flag(conn, super::settings::SHOW_LINKED_FOLDERS, false)?;
+    let mut rows: Vec<_> = page
+        .rows
+        .into_iter()
+        .filter(|r| !hidden.contains(&r.id))
+        .filter(|r| show_linked || !linked.contains(&r.id))
+        .collect();
 
     // Only the type grouping is refined. Grouping by month or by health asks
     // a different question, and splitting the collectors inside those would
@@ -78,10 +96,14 @@ pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
             }
             // A collector with no recorded kind is a folder: that is what
             // `contains` makes it, and a board is the one that had to be
-            // asked for.
-            let (key, label) = match collector_kind(conn, &row.id)?.as_deref() {
-                Some("board") => BOARDS,
-                _ => FOLDERS,
+            // asked for. A mirrored one is neither — you did not make it.
+            let (key, label) = if linked.contains(&row.id) {
+                LINKED
+            } else {
+                match collector_kind(conn, &row.id)?.as_deref() {
+                    Some("board") => BOARDS,
+                    _ => FOLDERS,
+                }
             };
             row.group_key = key.to_string();
             row.group_label = label.to_string();
@@ -508,6 +530,55 @@ mod tests {
             source(&c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap(),
         )
         .unwrap();
+        // And the same two listings with the folders you linked drawn in, so
+        // the walkthrough can drive the option in the Sources panel against
+        // what the real projection answers either way rather than against a
+        // guess at what the heading is called.
+        crate::model::settings::set_flag(&c, crate::model::settings::SHOW_LINKED_FOLDERS, true)
+            .unwrap();
+        let source_linked = serde_json::to_value(source(&c, &base(vec![])).unwrap()).unwrap();
+        let source_by_type_linked = serde_json::to_value(
+            source(&c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap(),
+        )
+        .unwrap();
+        crate::model::settings::set_flag(&c, crate::model::settings::SHOW_LINKED_FOLDERS, false)
+            .unwrap();
+
+        // The Sources panel's own rows, from the real `sources::list`: what
+        // it holds while nothing is staged, and what it holds once a tickbox
+        // has been changed and not yet applied. The staging is what the panel
+        // draws its pending marks from, so a hand-written row here would be
+        // the harness agreeing with itself about a shape the Rust decides.
+        let src_id = crate::model::sources::add(&c, &dir.to_string_lossy()).unwrap();
+        let settings_json =
+            serde_json::to_value(crate::model::settings::all(&c).unwrap()).unwrap();
+        let sources_json =
+            serde_json::to_value(crate::model::sources::list(&c).unwrap()).unwrap();
+        crate::model::sources::set_enabled(&c, &src_id, false).unwrap();
+        let sources_staged =
+            serde_json::to_value(crate::model::sources::list(&c).unwrap()).unwrap();
+
+        // And what the Library becomes once a Refresh applies that staging:
+        // the same projection with the folder switched off. Recorded so the
+        // walkthrough can show the tickbox doing nothing until the Refresh
+        // and something at it, without either half being a guess.
+        crate::model::sources::apply_pending(&c).unwrap();
+        let by_type = |c: &Connection| {
+            serde_json::to_value(
+                source(c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap(),
+            )
+            .unwrap()
+        };
+        let source_by_type_off = by_type(&c);
+        crate::model::settings::set_flag(&c, crate::model::settings::SHOW_LINKED_FOLDERS, true)
+            .unwrap();
+        let source_by_type_off_linked = by_type(&c);
+        crate::model::settings::set_flag(&c, crate::model::settings::SHOW_LINKED_FOLDERS, false)
+            .unwrap();
+        // Put back: every listing above was taken with the folder on, and the
+        // records and cascades below are read from the same library.
+        crate::model::sources::set_enabled(&c, &src_id, true).unwrap();
+        crate::model::sources::apply_pending(&c).unwrap();
 
         // Enough tagging history for the vocabulary rung to have something to
         // say. Three items carry harbour *and* boats; alpha carries only
@@ -626,6 +697,13 @@ mod tests {
             "ids": ids,
             "source": source_page,
             "sourceByType": source_by_type,
+            "sourceLinked": source_linked,
+            "sourceByTypeLinked": source_by_type_linked,
+            "settings": settings_json,
+            "sources": sources_json,
+            "sourcesStaged": sources_staged,
+            "sourceByTypeOff": source_by_type_off,
+            "sourceByTypeOffLinked": source_by_type_off_linked,
             "scoped": scoped,
             "workspace": workspace,
             "viewerRoot": viewer_root,
@@ -787,6 +865,12 @@ mod tests {
 
         assert_eq!(source(&c, &opts(&[])).unwrap().rows.len(), 2);
         crate::model::sources::set_enabled(&c, &photos, false).unwrap();
+        assert_eq!(
+            source(&c, &opts(&[])).unwrap().rows.len(),
+            2,
+            "unticking stages the change; nothing moves until Refresh"
+        );
+        crate::model::sources::apply_pending(&c).unwrap();
         let page = source(&c, &opts(&[])).unwrap();
         assert_eq!(
             page.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
@@ -795,7 +879,83 @@ mod tests {
         assert_eq!(page.total, 1, "and the count agrees with what is drawn");
 
         crate::model::sources::set_enabled(&c, &photos, true).unwrap();
+        crate::model::sources::apply_pending(&c).unwrap();
         assert_eq!(source(&c, &opts(&[])).unwrap().rows.len(), 2, "back, untouched");
+    }
+
+    /// A folder the folder pass mirrored from disk: `app_generated` with a
+    /// locator, which is what `folders::derived_ids` reads.
+    fn linked_folder(c: &Connection, id: &str, name: &str, at: &str) {
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,
+                              source_kind,locator)
+             VALUES (?1,'collector','app.archiva.collector.folder','[]',?2,
+                     'app_generated',?3)",
+            params![id, name, at],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO collector(node_id,collector_kind) VALUES (?1,'folder')",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_folders_you_linked_are_left_out_of_the_library_by_default() {
+        // The Library lists what you *have*. A mirrored folder is a
+        // description of where some of it sits, which is a different
+        // question — and one the Viewer answers by cascading into it.
+        let c = db();
+        linked_folder(&c, "disk", "Photos", "/photos");
+        folder(&c, "mine", "My gathering");
+        item(&c, "p", "photo.jpg");
+
+        let page = source(&c, &opts(&[])).unwrap();
+        assert_eq!(
+            page.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["photo.jpg", "My gathering"],
+        );
+    }
+
+    #[test]
+    fn turning_them_on_puts_them_under_their_own_heading() {
+        // Not "Collector folders": you did not make it, and filing it with
+        // the ones you did would say you had.
+        let c = db();
+        linked_folder(&c, "disk", "Photos", "/photos");
+        folder(&c, "mine", "My gathering");
+        board(&c, "b", "Moodboard");
+        item(&c, "p", "photo.jpg");
+
+        crate::model::settings::set_flag(
+            &c,
+            crate::model::settings::SHOW_LINKED_FOLDERS,
+            true,
+        )
+        .unwrap();
+
+        let page = source(&c, &opts(&[])).unwrap();
+        assert_eq!(sections(&page), vec!["Images", "Collector boards", "Collector folders", "Linked folders"]);
+        let linked = page.rows.iter().find(|r| r.display_name == "Photos").unwrap();
+        assert_eq!(linked.group_key, LINKED.0);
+        assert_eq!(linked.group_label, "Linked folders");
+        let mine = page.rows.iter().find(|r| r.display_name == "My gathering").unwrap();
+        assert_eq!(mine.group_key, FOLDERS.0, "a gathering you made is still one");
+    }
+
+    #[test]
+    fn the_setting_changes_what_is_counted_as_well_as_what_is_drawn() {
+        // A total that disagrees with the rows is how a status line starts
+        // lying about what you are looking at.
+        let c = db();
+        linked_folder(&c, "disk", "Photos", "/photos");
+        item(&c, "p", "photo.jpg");
+
+        assert_eq!(source(&c, &opts(&[])).unwrap().total, 1);
+        crate::model::settings::set_flag(&c, crate::model::settings::SHOW_LINKED_FOLDERS, true)
+            .unwrap();
+        assert_eq!(source(&c, &opts(&[])).unwrap().total, 2);
     }
 
     #[test]

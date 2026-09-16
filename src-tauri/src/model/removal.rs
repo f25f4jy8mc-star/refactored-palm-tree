@@ -381,8 +381,9 @@ mod tests {
     #[test]
     fn clearing_empties_the_library_and_its_history_but_keeps_the_sources() {
         let c = db();
-        c.execute_batch(include_str!("../../migrations_model/002_sources.sql"))
-            .unwrap();
+        // The whole schema: `sources` is 002 and its staging column is 004,
+        // and a test database that is not the real one tests something else.
+        crate::db::migrate(&c).unwrap();
         crate::model::sources::add(&c, "/photos").unwrap();
         item(&c, "a", "/photos/a.jpg");
         c.execute(

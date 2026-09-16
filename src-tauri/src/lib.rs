@@ -75,6 +75,8 @@ pub fn run() {
             commands::remove_source,
             commands::set_source_enabled,
             commands::rescan,
+            commands::get_settings,
+            commands::set_show_linked_folders,
             commands::list_facets,
             commands::list_tags,
             commands::create_tag,

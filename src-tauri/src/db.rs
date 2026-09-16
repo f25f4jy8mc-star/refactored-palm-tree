@@ -29,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations_model/001_model.sql"),
     include_str!("../migrations_model/002_sources.sql"),
     include_str!("../migrations_model/003_view_shape.sql"),
+    include_str!("../migrations_model/004_staging.sql"),
 ];
 
 pub fn open(db_path: &Path) -> Result<Connection> {
@@ -76,7 +77,10 @@ fn applied_version(conn: &Connection) -> Result<usize> {
     if !has_column(conn, "view_prefs", "shape")? {
         return Ok(2);
     }
-    Ok(3)
+    if !has_column(conn, "source", "pending_enabled")? {
+        return Ok(3);
+    }
+    Ok(4)
 }
 
 fn has_table(conn: &Connection, name: &str) -> Result<bool> {

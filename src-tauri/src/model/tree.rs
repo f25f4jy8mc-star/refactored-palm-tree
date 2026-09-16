@@ -306,6 +306,7 @@ mod tests {
         assert!(names(&before[0]).contains(&"Cover"));
 
         crate::model::sources::set_enabled(&c, &src, false).unwrap();
+        crate::model::sources::apply_pending(&c).unwrap();
         let after = tree_from(&c, Some("root-folder"), &[]).unwrap();
         assert_eq!(names(&after[0]), vec!["Bergamo"], "Cover is switched off");
     }

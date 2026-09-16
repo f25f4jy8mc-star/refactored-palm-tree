@@ -122,10 +122,20 @@ export interface Space {
 export interface Source {
   id: string;
   path: string;
+  /** What is in effect — what the library is currently drawn from. */
   enabled: boolean;
+  /** What the tickbox says, when that differs from what is in effect.
+   * `null` means the two agree; Refresh is what closes the gap. */
+  pending_enabled: boolean | null;
   added_at: string;
   last_scan_at: string | null;
   item_count: number;
+}
+
+/** A space's own preferences — decisions about the whole library, true
+ * wherever you look at it (not `ViewPrefs`, which is per pane, per scope). */
+export interface Settings {
+  showLinkedFolders: boolean;
 }
 
 /** One entry of a compass slot in `p_detail` — carries the far node's row

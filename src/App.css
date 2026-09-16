@@ -1577,6 +1577,38 @@ body {
   color: var(--dim);
 }
 
+/* A staged line is one a Refresh would change. Marked on the rule rather
+   than by restyling the path, so it reads as "pending" beside `off`, which
+   still means what is in effect right now. */
+.source-list li.staged {
+  border-bottom-color: var(--ink);
+}
+
+.source-pending {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Not a source row: a choice about how the sources above are drawn. */
+.source-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin: 0 0 10px;
+  cursor: pointer;
+}
+
+.hint.staged {
+  color: var(--ink-2);
+  border-left: 3px solid var(--ink);
+  padding-left: 8px;
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
 .flyout-actions {
   display: flex;
   gap: 8px;

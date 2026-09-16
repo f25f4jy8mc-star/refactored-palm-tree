@@ -25,6 +25,7 @@ use crate::model::rowtree;
 use crate::model::removal::{self, Preview, Removal};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
+use crate::model::settings::{self, Settings};
 use crate::model::sources::{self, Source};
 use crate::model::spaces;
 use crate::model::suggest::{self, DuplicatePair};
@@ -426,6 +427,32 @@ pub fn set_source_enabled(
     Ok(())
 }
 
+/* ------------------------------------------------------------ settings */
+
+#[tauri::command]
+pub fn get_settings(db: State<Db>) -> Result<Settings, String> {
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
+    settings::all(&conn).map_err(|e| e.to_string())
+}
+
+/// Whether the folders you linked are drawn in the Library as items.
+///
+/// Unlike a tickbox in the sources list this is not staged behind Refresh:
+/// nothing is indexed or forgotten by it, it only decides what the listing
+/// draws from what is already there, so it takes effect the moment it is set.
+#[tauri::command]
+pub fn set_show_linked_folders(app: AppHandle, db: State<Db>, show: bool) -> Result<(), String> {
+    {
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+        let conn = opened(&guard)?;
+        settings::set_flag(&conn, settings::SHOW_LINKED_FOLDERS, show)
+            .map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("archiva:changed", ());
+    Ok(())
+}
+
 /// Re-index every enabled source, in one pass.
 ///
 /// One pass over *all* of them, always — never a single folder. `scan`
@@ -451,6 +478,11 @@ pub fn rescan(app: AppHandle, db: State<Db>) -> Result<ScanReportDto, String> {
     let report = {
         let mut guard = db.open.lock().map_err(|e| e.to_string())?;
         let conn = opened_mut(&mut guard)?;
+        // Refresh is the moment a tickbox takes effect. Applying before the
+        // roots are read means a folder switched off is not walked on its way
+        // out, and one switched on is walked on its way in — a single pass
+        // either way, with no state where the library disagrees with the list.
+        sources::apply_pending(conn).map_err(|e| e.to_string())?;
         let roots = sources::enabled_roots(conn).map_err(|e| e.to_string())?;
         // Never index what Archiva itself writes (invariant 9). That is the
         // space's own folder: its index, its proxies, its notes. A watched

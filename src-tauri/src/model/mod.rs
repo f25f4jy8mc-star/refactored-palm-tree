@@ -33,6 +33,7 @@ pub mod removal;
 pub mod rowtree;
 pub mod scan;
 pub mod search;
+pub mod settings;
 pub mod signals;
 pub mod sources;
 pub mod spaces;

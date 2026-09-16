@@ -25,7 +25,12 @@ use super::scan::uuid_v7;
 pub struct Source {
     pub id: String,
     pub path: String,
+    /// What is in effect: whether this folder's contents are displayed.
     pub enabled: bool,
+    /// What the tickbox says, when that differs from what is in effect.
+    /// `None` means the two agree. Refresh is what closes the gap — see
+    /// `apply_pending`.
+    pub pending_enabled: Option<bool>,
     pub added_at: String,
     pub last_scan_at: Option<String>,
     /// Nodes whose locator sits under this path. Derived, never stored —
@@ -35,16 +40,17 @@ pub struct Source {
 
 pub fn list(conn: &Connection) -> Result<Vec<Source>> {
     let mut q = conn.prepare(
-        "SELECT id, path, enabled, added_at, last_scan_at FROM source ORDER BY path",
+        "SELECT id, path, enabled, added_at, last_scan_at, pending_enabled
+           FROM source ORDER BY path",
     )?;
-    let raw: Vec<(String, String, i64, String, Option<String>)> = q
+    let raw: Vec<(String, String, i64, String, Option<String>, Option<i64>)> = q
         .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
         })?
         .collect::<std::result::Result<_, _>>()?;
 
     let mut out = Vec::with_capacity(raw.len());
-    for (id, path, enabled, added_at, last_scan_at) in raw {
+    for (id, path, enabled, added_at, last_scan_at, pending) in raw {
         // `LIKE path || '/%'` rather than a prefix match on `path` itself,
         // so /photos never counts /photos-old's items as its own.
         let item_count: i64 = conn.query_row(
@@ -57,6 +63,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Source>> {
             id,
             path,
             enabled: enabled != 0,
+            pending_enabled: pending.map(|p| p != 0),
             added_at,
             last_scan_at,
             item_count,
@@ -77,8 +84,13 @@ pub fn add(conn: &Connection, path: &str) -> Result<String> {
         params![path],
         |r| r.get::<_, String>(0),
     ) {
-        // Re-adding a disabled source is how you turn it back on.
-        conn.execute("UPDATE source SET enabled = 1 WHERE id = ?1", params![existing])?;
+        // Re-adding a disabled source is how you turn it back on — and it
+        // takes effect now rather than waiting for a Refresh, because adding
+        // a folder already scans, which is the same moment.
+        conn.execute(
+            "UPDATE source SET enabled = 1, pending_enabled = NULL WHERE id = ?1",
+            params![existing],
+        )?;
         return Ok(existing);
     }
     let id = uuid_v7();
@@ -98,15 +110,48 @@ pub fn remove(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Tick or untick a folder. **Staged**: nothing about what is displayed
+/// changes until `apply_pending` runs, which Refresh does.
+///
+/// Immediate would be easier to write and worse to use — half a library
+/// disappearing while you are still working down a list of folders, with no
+/// single moment you chose. Refresh is that moment, and it is where the
+/// re-index happens anyway.
+///
+/// Setting it back to what is already in effect clears the pending change
+/// rather than staging a no-op: unticking and reticking is not a change, and
+/// a Refresh button lit for one would be lying.
 pub fn set_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<()> {
     let n = conn.execute(
-        "UPDATE source SET enabled = ?2 WHERE id = ?1",
+        "UPDATE source
+            SET pending_enabled = CASE WHEN enabled = ?2 THEN NULL ELSE ?2 END
+          WHERE id = ?1",
         params![id, i64::from(enabled)],
     )?;
     if n == 0 {
         return Err(anyhow!("no such source: {id}"));
     }
     Ok(())
+}
+
+/// Put every staged tickbox into effect. Returns how many actually changed.
+pub fn apply_pending(conn: &Connection) -> Result<usize> {
+    let changed = conn.execute(
+        "UPDATE source SET enabled = pending_enabled WHERE pending_enabled IS NOT NULL",
+        [],
+    )?;
+    conn.execute("UPDATE source SET pending_enabled = NULL", [])?;
+    Ok(changed)
+}
+
+/// Whether anything is waiting for a Refresh. The panel reads this to say so.
+pub fn has_pending(conn: &Connection) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM source WHERE pending_enabled IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// Every enabled source's path, which is what a scan must walk in one pass
@@ -171,10 +216,9 @@ mod tests {
     fn db() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.pragma_update(None, "foreign_keys", "ON").unwrap();
-        c.execute_batch(include_str!("../../migrations_model/001_model.sql"))
-            .unwrap();
-        c.execute_batch(include_str!("../../migrations_model/002_sources.sql"))
-            .unwrap();
+        // Every migration. A test database that is not the real schema is a
+        // test that proves something else — `pending_enabled` lives in 004.
+        crate::db::migrate(&c).unwrap();
         c
     }
 
@@ -200,6 +244,7 @@ mod tests {
         let c = db();
         let id = add(&c, "/photos").unwrap();
         set_enabled(&c, &id, false).unwrap();
+        apply_pending(&c).unwrap();
         assert!(!list(&c).unwrap()[0].enabled);
         add(&c, "/photos").unwrap();
         assert!(list(&c).unwrap()[0].enabled);
@@ -211,6 +256,7 @@ mod tests {
         add(&c, "/a").unwrap();
         let b = add(&c, "/b").unwrap();
         set_enabled(&c, &b, false).unwrap();
+        apply_pending(&c).unwrap();
         let roots = enabled_roots(&c).unwrap();
         assert_eq!(roots, vec![PathBuf::from("/a")]);
     }
@@ -285,6 +331,7 @@ mod tests {
 
         assert!(hidden_ids(&c).unwrap().is_empty(), "nothing is off yet");
         set_enabled(&c, &photos, false).unwrap();
+        apply_pending(&c).unwrap();
         let hidden = hidden_ids(&c).unwrap();
         assert!(hidden.contains("a"));
         assert!(!hidden.contains("b"), "the other folder is untouched");
@@ -299,6 +346,7 @@ mod tests {
         indexed(&c, "old", "/photos-old/b.jpg");
 
         set_enabled(&c, &photos, false).unwrap();
+        apply_pending(&c).unwrap();
         let hidden = hidden_ids(&c).unwrap();
         assert!(hidden.contains("new"));
         assert!(!hidden.contains("old"), "/photos-old is a different folder");
@@ -313,6 +361,7 @@ mod tests {
         indexed(&c, "a", "/photos/a.jpg");
 
         set_enabled(&c, &photos, false).unwrap();
+        apply_pending(&c).unwrap();
         assert_eq!(hidden_ids(&c).unwrap().len(), 1);
         let still: i64 = c
             .query_row("SELECT COUNT(*) FROM node WHERE id = 'a'", [], |r| r.get(0))
@@ -320,7 +369,73 @@ mod tests {
         assert_eq!(still, 1, "the item is still in the library");
 
         set_enabled(&c, &photos, true).unwrap();
+        apply_pending(&c).unwrap();
         assert!(hidden_ids(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unticking_stages_the_change_and_refresh_applies_it() {
+        // Half a library disappearing while you are still working down a
+        // list of folders, with no single moment you chose, is why this is
+        // staged. Refresh is that moment.
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        indexed(&c, "a", "/photos/a.jpg");
+
+        set_enabled(&c, &photos, false).unwrap();
+        assert!(has_pending(&c).unwrap(), "the panel can say a Refresh is due");
+        assert_eq!(list(&c).unwrap()[0].pending_enabled, Some(false));
+        assert!(list(&c).unwrap()[0].enabled, "and nothing is in effect yet");
+        assert!(hidden_ids(&c).unwrap().is_empty(), "so nothing is hidden yet");
+
+        assert_eq!(apply_pending(&c).unwrap(), 1);
+        assert!(!has_pending(&c).unwrap());
+        assert_eq!(list(&c).unwrap()[0].pending_enabled, None);
+        assert!(!list(&c).unwrap()[0].enabled);
+        assert_eq!(hidden_ids(&c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unticking_and_reticking_is_not_a_change() {
+        // A Refresh button lit for a no-op would be lying about there being
+        // something to apply.
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        set_enabled(&c, &photos, false).unwrap();
+        set_enabled(&c, &photos, true).unwrap();
+        assert!(!has_pending(&c).unwrap());
+        assert_eq!(list(&c).unwrap()[0].pending_enabled, None);
+        assert_eq!(apply_pending(&c).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_staged_folder_is_still_walked_until_the_refresh_that_drops_it() {
+        // Refresh applies the tickboxes *then* walks, so the folder being
+        // switched off is not scanned on the way out.
+        let c = db();
+        let a = add(&c, "/a").unwrap();
+        add(&c, "/b").unwrap();
+        set_enabled(&c, &a, false).unwrap();
+        assert_eq!(enabled_roots(&c).unwrap().len(), 2, "not applied yet");
+        apply_pending(&c).unwrap();
+        assert_eq!(
+            enabled_roots(&c).unwrap(),
+            vec![PathBuf::from("/b")],
+            "and after Refresh applies it, only /b is walked"
+        );
+    }
+
+    #[test]
+    fn re_adding_a_folder_clears_a_staged_removal() {
+        // Adding a folder scans, which is the same moment a Refresh would
+        // be — so "I want this watched" takes effect rather than queueing
+        // behind a tick you already changed your mind about.
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        set_enabled(&c, &photos, false).unwrap();
+        add(&c, "/photos").unwrap();
+        assert!(!has_pending(&c).unwrap());
+        assert!(list(&c).unwrap()[0].enabled);
     }
 
     #[test]
@@ -336,6 +451,7 @@ mod tests {
         )
         .unwrap();
         set_enabled(&c, &photos, false).unwrap();
+        apply_pending(&c).unwrap();
         assert!(hidden_ids(&c).unwrap().is_empty());
     }
 }

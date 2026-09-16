@@ -15,6 +15,7 @@ import type {
   RemovalPreview,
   RemovalResult,
   ScanReport,
+  Settings,
   Source,
   Space,
   Tag,
@@ -119,14 +120,40 @@ export function removeSource(id: string, forgetItems = false): Promise<number> {
   return invoke("remove_source", { id, forgetItems });
 }
 
+/** Stages the change — nothing moves until `rescan()` applies it. Ticking a
+ * folder back to where it already is cancels the staging rather than adding
+ * a second one. */
 export function setSourceEnabled(id: string, enabled: boolean): Promise<void> {
   return invoke("set_source_enabled", { id, enabled });
+}
+
+/** True when a tickbox is waiting on a Refresh. Derived here rather than
+ * asked of the backend a second time — the list already says so. */
+export function isStaged(sources: Source[]): boolean {
+  return sources.some((s) => s.pending_enabled !== null);
+}
+
+/** What a source's tickbox should show: the staged answer if there is one. */
+export function tickOf(s: Source): boolean {
+  return s.pending_enabled ?? s.enabled;
 }
 
 /** Re-index every enabled source in one pass — there is deliberately no
  * scan-one-folder call, see `commands::rescan`. */
 export function rescan(): Promise<ScanReport> {
   return invoke("rescan");
+}
+
+/* ---------------------------------------------------------- settings */
+
+export function getSettings(): Promise<Settings> {
+  return invoke("get_settings");
+}
+
+/** Not staged behind Refresh: nothing is indexed or forgotten by it, so it
+ * takes effect at once. */
+export function setShowLinkedFolders(show: boolean): Promise<void> {
+  return invoke("set_show_linked_folders", { show });
 }
 
 /* --------------------------------------------------------- view prefs */
