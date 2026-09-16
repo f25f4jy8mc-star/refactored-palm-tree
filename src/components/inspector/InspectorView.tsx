@@ -18,6 +18,7 @@
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 import {
   acceptSuggestion,
@@ -30,7 +31,14 @@ import {
 } from "../../lib/api";
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
-import { CAPABILITY_LABEL, type Capability } from "../../lib/capabilities";
+import {
+  CAPABILITY_LABEL,
+  openDestinations,
+  previewSource,
+  type Capability,
+  type Destination,
+  type OpenOption,
+} from "../../lib/capabilities";
 import type { FacetSlot, ItemRecord, Link, Row, Slot, Tag } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "../library/Thumbnail";
@@ -65,6 +73,87 @@ function formatBytes(bytes: number | null): string | null {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
+/* ----------------------------------------------------- open in… (menu) */
+
+type MenuAt = { x: number; y: number; node: Row };
+
+/** The right-click menu on a compass entry. What it offers comes from the
+ * item's resolved capabilities, not from this file knowing what a photograph
+ * is — see `openDestinations`. */
+function OpenInMenu({
+  at,
+  onPick,
+  onClose,
+}: {
+  at: MenuAt;
+  onPick: (destination: Destination, node: Row) => void;
+  onClose: () => void;
+}) {
+  const options: OpenOption[] = openDestinations(at.node);
+  const box = useRef<HTMLDivElement>(null);
+
+  // Any click outside, any scroll, or Escape.
+  //
+  // "Outside" is asked of the element, not of the event's phase: the listener
+  // is in capture so a click that would also select something behind the menu
+  // closes it first, and capture runs *before* React's own handlers — so a
+  // `stopPropagation` on the menu could not have saved it. Without the
+  // containment check the menu unmounted on mousedown and the click never
+  // reached the item, which looked exactly like a button that did nothing.
+  useEffect(() => {
+    const away = (e: Event) => {
+      if (box.current?.contains(e.target as Node)) return;
+      onClose();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("mousedown", away, true);
+    window.addEventListener("scroll", away, true);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("mousedown", away, true);
+      window.removeEventListener("scroll", away, true);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      ref={box}
+      className="ctx-menu"
+      style={{ left: at.x, top: at.y }}
+      role="menu"
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="ctx-title">{at.node.display_name}</div>
+      {options.length === 0 ? (
+        <div className="ctx-none">Nothing can open this yet.</div>
+      ) : (
+        options.map((o) => (
+          <button
+            key={o.destination}
+            className="ctx-item"
+            role="menuitem"
+            disabled={!o.enabled}
+            onClick={() => {
+              onPick(o.destination, at.node);
+              onClose();
+            }}
+          >
+            <span>Open in {o.label}</span>
+            <span className="ctx-note">{o.note}</span>
+          </button>
+        ))
+      )}
+    </div>,
+    document.body,
+  );
+}
+
 /* --------------------------------------------------- the compass cross */
 
 /** One arm of the cross: what this item points at in one direction.
@@ -78,11 +167,13 @@ function CompassArm({
   name,
   sense,
   area,
+  onContext,
 }: {
   slot: Slot;
   name: string;
   sense: string;
   area: string;
+  onContext: (e: React.MouseEvent, node: Row) => void;
 }) {
   const [open, setOpen] = useState(true);
   // The groups are by node type; the cross wants the arm as one list, and the
@@ -114,7 +205,11 @@ function CompassArm({
       {!empty && open && (
         <ul className="compass-list">
           {links.map((l) => (
-            <li key={l.edge_id} title={l.label ?? l.kind}>
+            <li
+              key={l.edge_id}
+              title={l.label ?? l.kind}
+              onContextMenu={(e) => onContext(e, l.node)}
+            >
               <span className="icon">
                 <Thumbnail item={l.node} />
               </span>
@@ -131,7 +226,20 @@ function CompassArm({
 /** The item at the centre, with what it points at around it. Four separate
  * sections could say the same things and could not say *this*: that the four
  * directions are one structure, and which of them this item has nothing in. */
-function CompassCross({ slots, node }: { slots: Slot[]; node: Row }) {
+function CompassCross({
+  slots,
+  node,
+  onOpen,
+}: {
+  slots: Slot[];
+  node: Row;
+  onOpen: (destination: Destination, node: Row) => void;
+}) {
+  const [menu, setMenu] = useState<MenuAt | null>(null);
+  const onContext = (e: React.MouseEvent, far: Row) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, node: far });
+  };
   const at = (key: string): Slot =>
     slots.find((s) => s.compass === key) ?? { compass: key, total: 0, groups: [] };
   const total = slots.reduce((n, s) => n + s.total, 0);
@@ -150,19 +258,21 @@ function CompassCross({ slots, node }: { slots: Slot[]; node: Row }) {
             name={c.name}
             sense={c.sense}
             area={`at-${c.key.toLowerCase()}`}
+            onContext={onContext}
           />
         ))}
-        <div className="compass-centre">
+        <div className="compass-centre" onContextMenu={(e) => onContext(e, node)}>
           <span className="icon">
             <Thumbnail item={node} />
           </span>
           <span className="compass-centre-name">{node.display_name}</span>
         </div>
       </div>
+      {menu && <OpenInMenu at={menu} onPick={onOpen} onClose={() => setMenu(null)} />}
       <p className="hint">
         North and South invert: what is broader than this has this as something
         narrower. West and East do not — related and opposing read the same from
-        either end (G23).
+        either end (G23). Right-click an entry to open it elsewhere.
       </p>
     </section>
   );
@@ -294,12 +404,27 @@ function FacetRow({
 
 /* ------------------------------------------------------------ the view */
 
-export function InspectorView({ isActive }: { isActive: boolean }) {
-  const { id, selection } = useActiveItem();
+type Props = {
+  isActive: boolean;
+  /** Open something somewhere else. The Inspector decides *what* is
+   * applicable (from resolved capabilities); the shell owns the panes and
+   * decides how one gets opened. */
+  onOpen?: (destination: Destination, node: Row) => void;
+};
+
+export function InspectorView({ isActive, onOpen }: Props) {
+  const { id, selection, revealItem } = useActiveItem();
   const [rec, setRec] = useState<ItemRecord | null>(null);
   const [known, setKnown] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The head's preview, opened out to the width of the pane. Off by default:
+  // the Inspector is a reading surface, and a picture the size of the panel
+  // pushes everything that describes it below the fold.
+  const [expanded, setExpanded] = useState(false);
+  // An image that will not load is not offered as one. Same reasoning as
+  // `Thumbnail`: a broken frame reads as a broken *file*.
+  const [shotFailed, setShotFailed] = useState(false);
   const slot = useTaskbarSlot();
 
   // Tagging writes to the whole selection; everything else describes the one
@@ -328,6 +453,32 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // A new item is a new decision. Leaving it open would mean the pane's
+  // shape depended on what you happened to be looking at two clicks ago.
+  useEffect(() => {
+    setExpanded(false);
+    setShotFailed(false);
+  }, [id]);
+
+  /** Open a compass entry somewhere else.
+   *
+   * Two halves, because they are two different things. Revealing is a *list*
+   * asking to go to a row, and the Inspector can say that directly — it is
+   * the same channel the active item travels on. Bringing a pane forward, or
+   * making one, is the shell's business, because only the shell owns panes.
+   * A destination with no shell to ask is reported rather than swallowed. */
+  const openSomewhere = useCallback(
+    (destination: Destination, node: Row) => {
+      if (destination === "library") revealItem(node.id);
+      if (onOpen) {
+        onOpen(destination, node);
+      } else if (destination !== "library") {
+        setError(`Nothing here can open “${node.display_name}” in the ${destination}.`);
+      }
+    },
+    [onOpen, revealItem],
+  );
 
   useArchivaChanged(load);
 
@@ -386,17 +537,59 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
     const { identity, source, proxies, classification, health, history, node, attributes, slots, suggestions } = rec;
     const size = formatBytes(source.sizeBytes);
 
+    // The same rule Quick Look uses, from the same place — the original when
+    // the registry says it is reachable, the proxies otherwise. Only an image
+    // can be drawn inline; anything else would be a broken frame pretending
+    // to be a preview.
+    const preview = previewSource({
+      capabilities: node.capabilities,
+      locator: source.locator,
+      previewRef: proxies.previewRef,
+      thumbRef: proxies.thumbRef,
+    });
+    const showable = node.icon_kind === "image" && !!preview && !shotFailed;
+
     return (
       <div className="inspect">
         <div className="inspect-head">
-          <span className="inspect-thumb">
+          <button
+            className="inspect-thumb"
+            title={showable ? (expanded ? "Collapse preview" : "Expand preview") : undefined}
+            disabled={!showable}
+            onClick={() => setExpanded((v) => !v)}
+          >
             <Thumbnail item={node} />
-          </span>
-          <div>
+          </button>
+          <div className="inspect-headings">
             <div className="inspect-title">{identity.displayName}</div>
             <div className="inspect-sub">{identity.displaySubtitle}</div>
           </div>
+          {showable && (
+            <button
+              className={"btn" + (expanded ? " on" : "")}
+              title={expanded ? "Collapse preview" : "Expand preview to the panel"}
+              aria-expanded={expanded}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setExpanded((v) => !v)}
+            >
+              ⤢
+            </button>
+          )}
         </div>
+
+        {expanded && showable && (
+          // Full panel width, and as tall as the image needs up to a limit —
+          // an 8000px portrait would otherwise be one long scroll with the
+          // record pushed off the end of it.
+          <div className="inspect-preview">
+            <img
+              src={convertFileSrc(preview as string)}
+              alt=""
+              draggable={false}
+              onError={() => setShotFailed(true)}
+            />
+          </div>
+        )}
 
         {error && <div className="inspect-error">{error}</div>}
 
@@ -468,7 +661,7 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
                     title="Never offer this again"
                     disabled={busy}
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => write(() => dismissSuggestion(s.key, "metadata_tag"))}
+                    onClick={() => write(() => dismissSuggestion(s.key, s.kind))}
                   >
                     Dismiss
                   </button>
@@ -496,6 +689,14 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
             from well-named-but-untagged, and those need different prompts.
           </p>
         </section>
+
+        {/* ----------------------------------------------------- compass */}
+
+        {/* Above Identity, because it is the question you are most often here
+            to answer: what is this next to. The record below it — ids, paths,
+            fingerprints — is reference, and reference belongs under the thing
+            it is reference for. */}
+        <CompassCross slots={slots} node={node} onOpen={openSomewhere} />
 
         {/* ---------------------------------------------------- identity */}
 
@@ -644,7 +845,6 @@ export function InspectorView({ isActive }: { isActive: boolean }) {
 
         {/* ------------------------------------------------------- links */}
 
-        <CompassCross slots={slots} node={node} />
 
         {suggestions.length > 0 && (
           <section className="inspect-block">

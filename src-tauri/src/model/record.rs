@@ -25,7 +25,7 @@ use serde::Serialize;
 use super::facets;
 use super::health;
 use super::projections::{self, Detail};
-use super::suggest::{self, MetadataSuggestion};
+use super::suggest::{self, TagSuggestion};
 use super::tags::{self, Tag};
 
 /* --------------------------------------------------------- the ladder */
@@ -156,7 +156,7 @@ pub struct Classification {
     /// Every facet, filled or not — an empty slot is the prompt, so leaving it
     /// out would hide the thing the view most needs to show.
     pub tiers: Vec<TierBlock>,
-    pub suggestions: Vec<MetadataSuggestion>,
+    pub suggestions: Vec<TagSuggestion>,
 }
 
 #[derive(Debug, Serialize)]
@@ -343,10 +343,13 @@ fn classification(conn: &Connection, id: &str) -> Result<Classification> {
     }
     tiers.sort_by_key(|t| if t.tier == 0 { i64::MAX } else { t.tier });
 
-    Ok(Classification {
-        tiers,
-        suggestions: suggest::for_node(conn, id)?,
-    })
+    // Two ladders, one list. What the file says about itself comes first
+    // because it is the cheapest to judge; what your own vocabulary suggests
+    // follows. Both are accept-only and both carry the reason they exist.
+    let mut suggestions = suggest::for_node(conn, id)?;
+    suggestions.extend(suggest::from_vocabulary(conn, id)?);
+
+    Ok(Classification { tiers, suggestions })
 }
 
 fn history(conn: &Connection, id: &str) -> Result<Vec<Event>> {

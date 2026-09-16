@@ -710,10 +710,15 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+/* A button, because it is one — clicking it opens the preview out. It keeps
+   the plain look either way; a thumbnail that suddenly had a button's chrome
+   would read as a control rather than as the thing it shows. */
 .inspect-thumb {
   flex: 0 0 auto;
   width: 56px;
   height: 56px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 6px;
   overflow: hidden;
   display: flex;
@@ -732,6 +737,40 @@ body {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.inspect-thumb:not(:disabled) {
+  cursor: pointer;
+}
+
+.inspect-thumb:not(:disabled):hover {
+  border-color: var(--line-2);
+}
+
+.inspect-headings {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The expanded preview: the width of the panel, and no taller than half the
+   panel's height — an 8000px portrait would otherwise be one long scroll
+   with the record pushed off the end of it. */
+.inspect-preview {
+  margin: 12px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--wash);
+  display: flex;
+  justify-content: center;
+}
+
+.inspect-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 50vh;
+  object-fit: contain;
 }
 
 .inspect-title {
@@ -1430,6 +1469,75 @@ body {
   border-radius: 5px;
   background: var(--wash);
 }
+/* A right-click menu. Fixed, because it is positioned from the pointer's
+   viewport coordinates and portalled to the body — a scrolling ancestor
+   would otherwise carry it away from where it was opened. */
+.ctx-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.ctx-title {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--sunk);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ctx-item:hover:not(:disabled) {
+  background: var(--ink);
+  color: #fff;
+}
+
+.ctx-item:hover:not(:disabled) .ctx-note {
+  color: #ccc;
+}
+
+.ctx-item:disabled {
+  color: var(--dim);
+  cursor: default;
+}
+
+.ctx-note {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.ctx-none {
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .suggests-head {
   font-size: 10px;
   letter-spacing: 0.06em;

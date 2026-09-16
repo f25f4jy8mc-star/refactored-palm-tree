@@ -54,7 +54,27 @@ function Shell() {
       case "viewer":
         return <ViewerPane scopeId={params.scopeId} isActive={isActive} />;
       case "inspector":
-        return <InspectorView isActive={isActive} />;
+        return (
+          <InspectorView
+            isActive={isActive}
+            // The Inspector decides what is applicable; opening a pane is
+            // the shell's business. A Viewer opens fresh, as it does from
+            // everywhere else, so a folder you left on screen is never
+            // replaced by the one you just asked for.
+            onOpen={(destination, node) => {
+              if (destination === "viewer") {
+                dockRef.current?.open("viewer", node.display_name, node.id, true);
+              }
+              // The Library shows the item where it already is, so an open
+              // pane is brought forward rather than a second one made. This
+              // is the retargeting path `Dock.open` kept for "the moment
+              // something wants it" — something does now.
+              if (destination === "library") {
+                dockRef.current?.open("library", "Library", undefined, false);
+              }
+            }}
+          />
+        );
     }
   }, []);
 

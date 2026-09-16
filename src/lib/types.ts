@@ -194,9 +194,13 @@ export interface DuplicatePair {
   reason: string;
 }
 
-/** A Format or Era read off the file's own metadata (C5). Accept-only. */
-export interface MetadataSuggestion {
+/** A tag proposed for one item, never applied (C5, principle 3). Two rungs
+ * of the same tier-one ladder: `metadata_tag` is read off the file's own
+ * metadata, `vocabulary_tag` is a tag you already coined that this item
+ * looks like it wants. `kind` is what dismissing it is keyed by. */
+export interface TagSuggestion {
   key: string;
+  kind: "metadata_tag" | "vocabulary_tag";
   facet: string;
   name: string;
   evidence: string;
@@ -265,7 +269,7 @@ export interface TierBlock {
 
 export interface Classification {
   tiers: TierBlock[];
-  suggestions: MetadataSuggestion[];
+  suggestions: TagSuggestion[];
 }
 
 export interface HealthBlock {

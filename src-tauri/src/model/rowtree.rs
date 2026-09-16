@@ -408,7 +408,11 @@ mod tests {
             }
         }
         let mut workspace = serde_json::Map::new();
-        for spine in &w_spines {
+        // Both sets of spines. A *scoped* workspace cascade is the inside of
+        // one collector, which is the same listing either root gives — and
+        // the Inspector's "open in Viewer" can hand it a watched root, which
+        // is a start the workspace's own enumeration never reaches.
+        for spine in w_spines.iter().chain(spines.iter()) {
             workspace.insert(
                 format!("|{}", spine.join("|")),
                 serde_json::to_value(crate::model::tree::workspace(&c, None, spine).unwrap())
@@ -432,6 +436,24 @@ mod tests {
             source(&c, &ListOptions { group_by: "type".into(), ..base(vec![]) }).unwrap(),
         )
         .unwrap();
+
+        // Enough tagging history for the vocabulary rung to have something to
+        // say. Three items carry harbour *and* boats; alpha carries only
+        // harbour, so boats is a habit this one is missing. "Alpha" is a tag
+        // nothing carries, named after the file on purpose — dull, but it is
+        // the name-match rung, and the fixture's filenames are what they are.
+        for (name, facet, on) in [
+            ("harbour", "environment", &["alpha", "zulu", "photo", "deep"][..]),
+            ("boats", "subject", &["zulu", "photo", "deep"][..]),
+            ("Alpha", "subject", &[][..]),
+        ] {
+            let tag = crate::model::tags::ensure(&c, name, facet).unwrap();
+            let ids: Vec<String> = on.iter().map(|n| id_of(n)).collect();
+            if !ids.is_empty() {
+                crate::model::tags::apply(&c, &ids, &tag).unwrap();
+            }
+        }
+        crate::model::health::recompute_all(&c).unwrap();
 
         // A compass, from the real thing. The Inspector's cross is drawn
         // entirely out of `p_record`'s slots, so a hand-written `slots: []`
@@ -457,6 +479,30 @@ mod tests {
             serde_json::to_value(crate::model::record::record(&c, &id_of("alpha")).unwrap())
                 .unwrap();
 
+        // And one for everything else in the library. The walkthrough follows
+        // the active item wherever it lands — revealing something puts the
+        // Inspector on it — so recording only the node this test happens to
+        // click would report a disagreement that is really a gap in what was
+        // written down.
+        let mut records = serde_json::Map::new();
+        {
+            let mut q = c
+                .prepare("SELECT id FROM node WHERE node_type <> 'tag'")
+                .unwrap();
+            let ids: Vec<String> = q
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap();
+            drop(q);
+            for id in ids {
+                records.insert(
+                    id.clone(),
+                    serde_json::to_value(crate::model::record::record(&c, &id).unwrap()).unwrap(),
+                );
+            }
+        }
+
         // The Viewer's own root, spelled out: what its cascade opens with
         // when nothing scopes it. The walkthrough checks this against the
         // watched folder it must not be showing.
@@ -472,6 +518,7 @@ mod tests {
             "workspace": workspace,
             "viewerRoot": viewer_root,
             "record": record,
+            "records": records,
         });
         std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).ok();

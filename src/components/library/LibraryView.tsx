@@ -133,7 +133,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
   const trimmedQuery = query.trim();
   const searching = trimmedQuery.length > 0;
   const slot = useTaskbarSlot();
-  const { setActive, setSelection: publishSelection } = useActiveItem();
+  const { setActive, setSelection: publishSelection, reveal } = useActiveItem();
 
   // Per-scope view memory (§1.9, G13) — loaded once per mode, before the
   // first fetch, so the first render already reflects last time.
@@ -230,6 +230,32 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     else visibleRows.forEach((r) => m.set(r.id, r.display_name));
     return m;
   }, [searching, hits, visibleRows]);
+
+  // "Open in Library", answered. It acts on the *asking* — a serial that
+  // changes each time — rather than on the active item, which this pane
+  // publishes itself and would otherwise be chasing.
+  //
+  // Whatever is hiding the row is undone first: a reveal that leaves you
+  // looking at a filter is not a reveal. That is what the gesture means in
+  // Finder too, and it is why the filter and the fold are cleared here
+  // rather than the row being reported as missing.
+  const lastReveal = useRef(0);
+  useEffect(() => {
+    if (!reveal || reveal.at === lastReveal.current) return;
+    lastReveal.current = reveal.at;
+    const row = rows.find((r) => r.id === reveal.id);
+    if (!row) return;
+    setQuery("");
+    setKindFilter(null);
+    setCollapsed((c) => c.filter((k) => k !== row.group_key));
+    setSelection(Sel.click(row.id));
+    // After the state above has been drawn, or the row is not on screen to
+    // scroll to yet.
+    requestAnimationFrame(() => {
+      rowRefs.current.get(row.id)?.scrollIntoView({ block: "center" });
+      listRef.current?.focus();
+    });
+  }, [reveal, rows]);
 
   function announceOpen(node: Row | ListRow) {
     const target = openTarget(node);

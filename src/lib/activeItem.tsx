@@ -26,10 +26,20 @@ export type ActiveItem = {
   selection: string[];
 };
 
+/** A standing request that some list put this item on screen and under its
+ * cursor. Carries a serial rather than only an id, because revealing the
+ * same item twice is two requests — and because a list must act on the
+ * asking, not on the active item changing, or it would fight the very
+ * publishing it does itself. */
+export type Reveal = { id: string; at: number };
+
 type ActiveItemApi = ActiveItem & {
   setActive: (id: string | null, order?: string[]) => void;
   setSelection: (ids: string[]) => void;
   step: (delta: number) => string | null;
+  reveal: Reveal | null;
+  /** Ask whichever list can show this item to go to it. */
+  revealItem: (id: string) => void;
 };
 
 const ActiveItemContext = createContext<ActiveItemApi>({
@@ -39,10 +49,13 @@ const ActiveItemContext = createContext<ActiveItemApi>({
   setActive: () => {},
   setSelection: () => {},
   step: () => null,
+  reveal: null,
+  revealItem: () => {},
 });
 
 export function ActiveItemProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<ActiveItem>({ id: null, order: [], selection: [] });
+  const [reveal, setReveal] = useState<Reveal | null>(null);
 
   // Stable identities, because a view publishes its selection from an effect
   // and an unstable setter there is an infinite loop: the effect's own
@@ -78,6 +91,17 @@ export function ActiveItemProvider({ children }: { children: React.ReactNode }) 
     [],
   );
 
+  // Revealing makes the item active as well: a list that cannot show it (it
+  // is filtered out, or the pane is not open) still leaves the Inspector and
+  // Preview pointed at the right thing.
+  const revealItem = useCallback<ActiveItemApi["revealItem"]>(
+    (id) => {
+      setActive(id);
+      setReveal({ id, at: Date.now() });
+    },
+    [setActive],
+  );
+
   // A fresh object every render, deliberately: that is what pushes updates
   // past dockview's memoised portals.
   const value: ActiveItemApi = {
@@ -86,6 +110,8 @@ export function ActiveItemProvider({ children }: { children: React.ReactNode }) 
     selection: state.selection,
     setActive,
     setSelection,
+    reveal,
+    revealItem,
     step: (delta) => {
       const { id, order } = state;
       if (!id || order.length === 0) return null;
