@@ -62,7 +62,11 @@ fn section_rank(key: &str) -> usize {
 /// Every item in the library, once, sectioned by what it is.
 pub fn source(conn: &Connection, opts: &ListOptions) -> Result<ListPage> {
     let page = projections::rows(conn, &source_opts(opts))?;
-    let mut rows = page.rows;
+    // A source switched off in the Sources panel is hidden, not forgotten.
+    // The predicate lives in `sources` so every listing hides the same
+    // things; this is the reader that filters in Rust rather than in SQL.
+    let hidden = super::sources::hidden_ids(conn)?;
+    let mut rows: Vec<_> = page.rows.into_iter().filter(|r| !hidden.contains(&r.id)).collect();
 
     // Only the type grouping is refined. Grouping by month or by health asks
     // a different question, and splitting the collectors inside those would
@@ -138,8 +142,10 @@ mod tests {
     fn db() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.pragma_update(None, "foreign_keys", "ON").unwrap();
-        c.execute_batch(include_str!("../../migrations_model/001_model.sql"))
-            .unwrap();
+        // Every migration, not just the model: `sources` lives in 002 and the
+        // listings ask it what is switched off. A test database that is not
+        // the real schema is a test that proves something else.
+        crate::db::migrate(&c).unwrap();
         c
     }
 
@@ -315,7 +321,7 @@ mod tests {
 
         let mut c = Connection::open_in_memory().unwrap();
         c.pragma_update(None, "foreign_keys", "ON").unwrap();
-        c.execute_batch(include_str!("../../migrations_model/001_model.sql")).unwrap();
+        crate::db::migrate(&c).unwrap();
         scan::scan(&mut c, &[dir.clone()], &[], &Bare).unwrap();
         folders::rebuild(&c, &[dir.clone()]).unwrap();
         // One Collector made here rather than mirrored from disk, so the
@@ -589,6 +595,26 @@ mod tests {
             }
         }
 
+        // A real space, described by the real code. The shell draws nothing
+        // until one is open, so the walkthrough needs one — and a hand-written
+        // shape here would be exactly the stub that once let a broken build
+        // pass. Its folder is kept until the next run overwrites it, so
+        // `reachable` is true the way it would be in the app.
+        let space_home = std::env::temp_dir().join("archiva-fixture-space");
+        std::fs::remove_dir_all(&space_home).ok();
+        let space = crate::model::spaces::create(
+            &space_home.join("app-data"),
+            "Fixture Space",
+            &space_home.join("Archive"),
+        )
+        .unwrap();
+        let space_id = space.id.clone();
+        let space_json = serde_json::to_value(crate::model::spaces::describe(
+            space,
+            Some(&space_id),
+        ))
+        .unwrap();
+
         // The Viewer's own root, spelled out: what its cascade opens with
         // when nothing scopes it. The walkthrough checks this against the
         // watched folder it must not be showing.
@@ -606,6 +632,7 @@ mod tests {
             "record": record,
             "records": records,
             "noteBodies": note_bodies,
+            "space": space_json,
         });
         std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).ok();
@@ -742,6 +769,33 @@ mod tests {
             vec!["photo.jpg", "Trips"],
             "what Photos holds, and nothing beside it"
         );
+    }
+
+    #[test]
+    fn a_source_switched_off_takes_its_items_out_of_the_listing() {
+        // Unticking a folder in the Sources panel hides what it holds. The
+        // rows stay — ticking it again brings them back with their tags.
+        let c = db();
+        let photos = crate::model::sources::add(&c, "/photos").unwrap();
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,locator)
+             VALUES ('a','media','public.jpeg','[\"public.jpeg\",\"public.image\"]','a','/photos/a.jpg')",
+            [],
+        )
+        .unwrap();
+        item(&c, "loose", "loose.jpg");
+
+        assert_eq!(source(&c, &opts(&[])).unwrap().rows.len(), 2);
+        crate::model::sources::set_enabled(&c, &photos, false).unwrap();
+        let page = source(&c, &opts(&[])).unwrap();
+        assert_eq!(
+            page.rows.iter().map(|r| r.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["loose.jpg"],
+        );
+        assert_eq!(page.total, 1, "and the count agrees with what is drawn");
+
+        crate::model::sources::set_enabled(&c, &photos, true).unwrap();
+        assert_eq!(source(&c, &opts(&[])).unwrap().rows.len(), 2, "back, untouched");
     }
 
     #[test]

@@ -7,12 +7,14 @@
 //   * Re-index always covers every enabled source in one pass. It can't
 //     be per-folder: a scan finishes by marking everything it didn't see
 //     as missing, so a partial walk would declare the skipped folders gone.
-//   * Stop watching keeps the items by default. Their tags, links and notes
-//     are the user's work; unwatching a folder stops it being refreshed, it
-//     does not throw that away. Holding ⌥ while clicking ✕ forgets them too,
-//     which is the answer to "I unwatched everything and the content is
-//     still here" — it was doing exactly what it said, and there was no way
-//     to ask for the other thing.
+//   * The tickbox includes or excludes a folder from what is *displayed*.
+//     Unticking hides everything under it — from the Library, the columns
+//     and search alike — and ticking it again brings the lot back with its
+//     tags intact. Nothing is scanned or forgotten either way.
+//   * Unlinking asks which of two things you mean, because they are not the
+//     same and neither is the obvious default: keep the links and tags you
+//     added to those items, or delete them with the folder. Files on disk
+//     are never touched by either.
 //   * Empty library is the blunt version of that: every item goes, the
 //     watched folders stay. Which means a re-index brings it all back, and
 //     the button says so before it asks.
@@ -30,6 +32,7 @@ import {
 } from "../../lib/api";
 import { useArchivaChanged } from "../../lib/events";
 import type { Source } from "../../lib/types";
+import { SpacesPanel } from "../spaces/SpacesPanel";
 
 export function SourcesFlyout({ onClose }: { onClose: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
@@ -38,6 +41,10 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
   // Emptying the library is not undoable, so it asks once rather than
   // firing off a click that lands next to an unrelated ✕.
   const [confirmClear, setConfirmClear] = useState(false);
+  // Unlinking asks which of two things is meant. The two answers differ by
+  // what happens to work the user did — that is not a question to answer for
+  // them with a modifier key nobody finds.
+  const [unlinking, setUnlinking] = useState<Source | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -81,8 +88,10 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="flyout" onClick={(e) => e.stopPropagation()}>
+      <SpacesPanel onBusy={(b) => setBusy(b ? "Working…" : null)} />
+
       <div className="flyout-head">
-        <strong>Sources</strong>
+        <h2>Linked folders</h2>
         <span className="hint">files stay where they are</span>
       </div>
 
@@ -96,7 +105,11 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={s.enabled}
-              title={s.enabled ? "Stop including in scans" : "Include in scans"}
+              title={
+                s.enabled
+                  ? "Exclude this folder from what is displayed"
+                  : "Include this folder in what is displayed"
+              }
               onChange={(e) => run("Updating…", () => setSourceEnabled(s.id, e.target.checked))}
             />
             <span className="source-path" title={s.path}>
@@ -105,16 +118,8 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
             <span className="source-count">{s.item_count}</span>
             <button
               className="btn quiet"
-              title={
-                "Stop watching — indexed items remain.\n" +
-                "Hold ⌥ to forget its items as well (files are never touched)."
-              }
-              onClick={(e) =>
-                run(
-                  e.altKey ? "Removing and forgetting…" : "Removing…",
-                  () => removeSource(s.id, e.altKey),
-                )
-              }
+              title="Unlink this folder"
+              onClick={() => setUnlinking(s)}
             >
               ✕
             </button>
@@ -122,19 +127,71 @@ export function SourcesFlyout({ onClose }: { onClose: () => void }) {
         ))}
       </ul>
 
+      {sources.some((s) => !s.enabled) && (
+        <p className="hint">
+          Unticked folders are hidden everywhere — the Library, the columns and
+          search. Their items, tags and links are untouched, and ticking them
+          back brings the lot back. Refresh re-reads the folders that are on.
+        </p>
+      )}
+
       <div className="flyout-actions">
         <button className="btn primary" onClick={onAdd} disabled={!!busy}>
           Add Folder…
         </button>
         <button
           className="btn"
-          onClick={() => run("Re-indexing…", rescan)}
+          onClick={() => run("Refreshing…", rescan)}
           disabled={!!busy || sources.every((s) => !s.enabled)}
-          title="Walk every enabled source and reconcile what changed"
+          title="Walk every included folder and reconcile what changed"
         >
-          Re-index
+          Refresh
         </button>
       </div>
+
+      {unlinking && (
+        <div className="confirm">
+          <div className="confirm-what">
+            Unlink <b>{unlinking.path}</b>?
+          </div>
+          <p className="hint">
+            Archiva stops watching the folder either way, and the files on disk
+            are never touched. The question is what happens to the work you did
+            on its {unlinking.item_count} item{unlinking.item_count === 1 ? "" : "s"} — the
+            tags you applied and the links you drew, which live in this space,
+            not in the folder.
+          </p>
+          <div className="confirm-actions">
+            <button className="btn" onClick={() => setUnlinking(null)} disabled={!!busy}>
+              Cancel
+            </button>
+            <button
+              className="btn"
+              title="The items stay in the library with their tags and links"
+              disabled={!!busy}
+              onClick={() => {
+                const id = unlinking.id;
+                setUnlinking(null);
+                run("Unlinking…", () => removeSource(id, false));
+              }}
+            >
+              Unlink, keep tags and links
+            </button>
+            <button
+              className="btn primary"
+              title="The items and everything added to them are forgotten"
+              disabled={!!busy}
+              onClick={() => {
+                const id = unlinking.id;
+                setUnlinking(null);
+                run("Unlinking and forgetting…", () => removeSource(id, true));
+              }}
+            >
+              Unlink and delete them
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flyout-danger">
         {confirmClear ? (

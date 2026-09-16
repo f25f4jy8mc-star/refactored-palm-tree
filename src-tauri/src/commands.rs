@@ -26,12 +26,40 @@ use crate::model::removal::{self, Preview, Removal};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
 use crate::model::sources::{self, Source};
+use crate::model::spaces;
 use crate::model::suggest::{self, DuplicatePair};
 use crate::model::tags::{self, Tag};
 use crate::model::tree::{self, Column};
 use crate::model::view_prefs::{self, ViewPrefs};
 
-pub struct Db(pub Mutex<Connection>);
+/// The space that is open, and its index.
+pub struct Open {
+    pub space: spaces::Space,
+    pub conn: Connection,
+}
+
+/// What every command reaches through.
+///
+/// `open` is a slot rather than a connection because a space can be closed:
+/// there is none on a first run, and moving one closes it for as long as the
+/// folder is in flight. `app_data` is where the registry of spaces lives —
+/// outside every space, because it has to be readable before any is open.
+pub struct Db {
+    pub open: Mutex<Option<Open>>,
+    pub app_data: PathBuf,
+}
+
+const NO_SPACE: &str = "No space is open. Create one, or open a folder that already holds one.";
+
+type Slot<'a> = std::sync::MutexGuard<'a, Option<Open>>;
+
+fn opened<'a>(guard: &'a Slot<'a>) -> Result<&'a Connection, String> {
+    guard.as_ref().map(|o| &o.conn).ok_or_else(|| NO_SPACE.to_string())
+}
+
+fn opened_mut<'g>(guard: &'g mut Slot<'_>) -> Result<&'g mut Connection, String> {
+    guard.as_mut().map(|o| &mut o.conn).ok_or_else(|| NO_SPACE.to_string())
+}
 
 fn default_group_by() -> String {
     "type".into()
@@ -75,7 +103,8 @@ impl From<ListRowsArgs> for ListOptions {
 /// hierarchy is something you go *into* a collector to read (`tree_columns`).
 #[tauri::command]
 pub fn list_rows(db: State<Db>, args: ListRowsArgs) -> Result<ListPage, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     let opts: ListOptions = args.into();
     rowtree::source(&conn, &opts).map_err(|e| e.to_string())
 }
@@ -125,7 +154,8 @@ fn default_search_limit() -> usize {
 
 #[tauri::command]
 pub fn search_library(db: State<Db>, args: SearchArgs) -> Result<Vec<Hit>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     let opts = search::Options {
         type_filter: args.type_filter,
         limit: args.limit,
@@ -149,7 +179,8 @@ pub fn tree_columns(
     path: Vec<String>,
     workspace: Option<bool>,
 ) -> Result<Vec<Column>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     let cascade = if workspace.unwrap_or(false) {
         tree::workspace
     } else {
@@ -160,7 +191,8 @@ pub fn tree_columns(
 
 #[tauri::command]
 pub fn get_view_prefs(db: State<Db>, scope_id: String, pane_kind: String) -> Result<ViewPrefs, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     view_prefs::get(&conn, &scope_id, &pane_kind).map_err(|e| e.to_string())
 }
 
@@ -171,22 +203,168 @@ pub fn set_view_prefs(
     pane_kind: String,
     prefs: ViewPrefs,
 ) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     view_prefs::set(&conn, &scope_id, &pane_kind, &prefs).map_err(|e| e.to_string())
+}
+
+/* -------------------------------------------------------------- spaces */
+
+use crate::model::spaces::{describe, Described as SpaceDto};
+
+fn current_id(db: &Db) -> Option<String> {
+    db.open
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|o| o.space.id.clone()))
+}
+
+#[tauri::command]
+pub fn list_spaces(db: State<Db>) -> Result<Vec<SpaceDto>, String> {
+    let current = current_id(&db);
+    let all = spaces::list(&db.app_data).map_err(|e| format!("{e:#}"))?;
+    Ok(all.into_iter().map(|s| describe(s, current.as_deref())).collect())
+}
+
+/// The space this window is looking at, or none on a first run.
+#[tauri::command]
+pub fn current_space(db: State<Db>) -> Result<Option<SpaceDto>, String> {
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    Ok(guard.as_ref().map(|o| describe(o.space.clone(), Some(&o.space.id))))
+}
+
+/// Swap the open space for another. Every pane refetches on the event, which
+/// is how a whole different library arrives without anything holding a stale
+/// row from the last one.
+fn switch_to(app: &AppHandle, db: &Db, id: &str) -> Result<SpaceDto, String> {
+    let (space, conn) = spaces::open(&db.app_data, id).map_err(|e| format!("{e:#}"))?;
+    {
+        let mut guard = db.open.lock().map_err(|e| e.to_string())?;
+        *guard = Some(Open {
+            space: space.clone(),
+            conn,
+        });
+    }
+    let _ = app.emit("archiva:changed", ());
+    Ok(describe(space, Some(id)))
+}
+
+#[tauri::command]
+pub fn open_space(app: AppHandle, db: State<Db>, id: String) -> Result<SpaceDto, String> {
+    switch_to(&app, &db, &id)
+}
+
+/// Make a space in a folder the user chose, and open it.
+#[tauri::command]
+pub fn create_space(
+    app: AppHandle,
+    db: State<Db>,
+    name: String,
+    path: String,
+) -> Result<SpaceDto, String> {
+    let space = spaces::create(&db.app_data, &name, std::path::Path::new(&path))
+        .map_err(|e| format!("{e:#}"))?;
+    switch_to(&app, &db, &space.id)
+}
+
+/// Open a folder that already holds a space — a backup drive, another
+/// machine's copy — adopting it if this machine has not seen it before. A
+/// folder with no space in it becomes one, which is the same gesture.
+#[tauri::command]
+pub fn open_space_folder(app: AppHandle, db: State<Db>, path: String) -> Result<SpaceDto, String> {
+    let space = spaces::open_folder(&db.app_data, std::path::Path::new(&path))
+        .map_err(|e| format!("{e:#}"))?;
+    switch_to(&app, &db, &space.id)
+}
+
+#[tauri::command]
+pub fn rename_space(
+    app: AppHandle,
+    db: State<Db>,
+    id: String,
+    name: String,
+) -> Result<SpaceDto, String> {
+    let space = spaces::rename(&db.app_data, &id, &name).map_err(|e| format!("{e:#}"))?;
+    // The open space carries its own name for the window chrome, so it is
+    // updated in place rather than left to disagree with the registry.
+    {
+        let mut guard = db.open.lock().map_err(|e| e.to_string())?;
+        if let Some(open) = guard.as_mut() {
+            if open.space.id == space.id {
+                open.space = space.clone();
+            }
+        }
+    }
+    let _ = app.emit("archiva:changed", ());
+    let current = current_id(&db);
+    Ok(describe(space, current.as_deref()))
+}
+
+/// Move a space's folder, with everything in it.
+///
+/// The index has to be closed first — a file cannot be moved out from under
+/// an open connection on every platform — so the space is closed, moved, and
+/// opened again at its new home. If the move fails it is reopened where it
+/// was, because a failed move that also lost the library would be far worse
+/// than a failed move.
+#[tauri::command]
+pub fn move_space(
+    app: AppHandle,
+    db: State<Db>,
+    id: String,
+    path: String,
+) -> Result<SpaceDto, String> {
+    let was_open = current_id(&db).as_deref() == Some(id.as_str());
+    if was_open {
+        let mut guard = db.open.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+
+    let moved = spaces::move_to(&db.app_data, &id, std::path::Path::new(&path));
+    match moved {
+        Ok(space) => {
+            if was_open {
+                return switch_to(&app, &db, &space.id);
+            }
+            let current = current_id(&db);
+            Ok(describe(space, current.as_deref()))
+        }
+        Err(e) => {
+            if was_open {
+                let _ = switch_to(&app, &db, &id);
+            }
+            Err(format!("{e:#}"))
+        }
+    }
+}
+
+/// Stop listing a space here. Never deletes the folder — pointing at it
+/// again brings the whole library back, tags and all.
+#[tauri::command]
+pub fn forget_space(app: AppHandle, db: State<Db>, id: String) -> Result<(), String> {
+    if current_id(&db).as_deref() == Some(id.as_str()) {
+        let mut guard = db.open.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    spaces::forget(&db.app_data, &id).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("archiva:changed", ());
+    Ok(())
 }
 
 /* ------------------------------------------------------------- sources */
 
 #[tauri::command]
 pub fn list_sources(db: State<Db>) -> Result<Vec<Source>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     sources::list(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn add_source(app: AppHandle, db: State<Db>, path: String) -> Result<ScanReportDto, String> {
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         sources::add(&conn, &path).map_err(|e| e.to_string())?;
     }
     rescan(app, db)
@@ -207,7 +385,8 @@ pub fn remove_source(
     forget_items: bool,
 ) -> Result<usize, String> {
     let forgotten = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let path: String = conn
             .query_row(
                 "SELECT path FROM source WHERE id = ?1",
@@ -239,7 +418,8 @@ pub fn set_source_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         sources::set_enabled(&conn, &id, enabled).map_err(|e| e.to_string())?;
     }
     let _ = app.emit("archiva:changed", ());
@@ -254,8 +434,14 @@ pub fn set_source_enabled(
 /// there is no scan-this-one-folder command.
 #[tauri::command]
 pub fn rescan(app: AppHandle, db: State<Db>) -> Result<ScanReportDto, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let proxies_dir = data_dir.join("proxies");
+    // Proxies belong to the space, not to application support: that is what
+    // the user chose a location *for*, and it is what makes a space something
+    // you can copy to another drive and open there.
+    let space_root = {
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or(NO_SPACE)?.space.path()
+    };
+    let proxies_dir = space_root.join("proxies");
     std::fs::create_dir_all(&proxies_dir).map_err(|e| e.to_string())?;
     let extractor = RealExtractor {
         proxies_dir,
@@ -263,13 +449,16 @@ pub fn rescan(app: AppHandle, db: State<Db>) -> Result<ScanReportDto, String> {
     };
 
     let report = {
-        let mut conn = db.0.lock().map_err(|e| e.to_string())?;
-        let roots = sources::enabled_roots(&conn).map_err(|e| e.to_string())?;
-        // Never index what Archiva itself writes (invariant 9) — the
-        // workspace holds proxies and app-generated notes.
-        let exclude: Vec<PathBuf> = vec![data_dir.clone()];
+        let mut guard = db.open.lock().map_err(|e| e.to_string())?;
+        let conn = opened_mut(&mut guard)?;
+        let roots = sources::enabled_roots(conn).map_err(|e| e.to_string())?;
+        // Never index what Archiva itself writes (invariant 9). That is the
+        // space's own folder: its index, its proxies, its notes. A watched
+        // folder that happens to contain the space would otherwise index
+        // Archiva's own output as content.
+        let exclude: Vec<PathBuf> = vec![space_root.clone()];
         let report =
-            scan::scan(&mut conn, &roots, &exclude, &extractor).map_err(|e| e.to_string())?;
+            scan::scan(conn, &roots, &exclude, &extractor).map_err(|e| e.to_string())?;
         sources::mark_scanned(&conn).map_err(|e| e.to_string())?;
         // The scan records where each file is but creates nothing to stand
         // for the folders themselves, so the hierarchy is built here from
@@ -310,7 +499,8 @@ pub struct DetailDto {
 
 #[tauri::command]
 pub fn node_detail(db: State<Db>, id: String) -> Result<DetailDto, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     let detail = projections::detail(&conn, &id, &projections::Options::default())
         .map_err(|e| e.to_string())?;
     let (locator, preview_ref, size_bytes) = conn
@@ -333,7 +523,8 @@ pub fn node_detail(db: State<Db>, id: String) -> Result<DetailDto, String> {
 /// `p_record` — everything known about one item. The Inspector's single read.
 #[tauri::command]
 pub fn node_record(db: State<Db>, id: String) -> Result<Record, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     record::record(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -342,7 +533,8 @@ pub fn node_record(db: State<Db>, id: String) -> Result<Record, String> {
 /// the second half of the same answer rather than a licence to read any path.
 #[tauri::command]
 pub fn note_body(db: State<Db>, id: String) -> Result<Option<notetext::NoteBody>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     notetext::body(&conn, &id).map_err(|e| format!("{e:#}"))
 }
 
@@ -359,14 +551,16 @@ pub fn list_facets() -> Vec<&'static Facet> {
 
 #[tauri::command]
 pub fn list_tags(db: State<Db>) -> Result<Vec<Tag>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     tags::list(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn create_tag(app: AppHandle, db: State<Db>, name: String, facet: String) -> Result<String, String> {
     let id = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         tags::ensure(&conn, &name, &facet).map_err(|e| e.to_string())?
     };
     let _ = app.emit("archiva:changed", ());
@@ -383,7 +577,8 @@ pub fn apply_tag(
     tag_id: String,
 ) -> Result<usize, String> {
     let changed = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let n = tags::apply(&conn, &node_ids, &tag_id).map_err(|e| e.to_string())?;
         health::recompute_many(&conn, &node_ids).map_err(|e| e.to_string())?;
         n
@@ -400,7 +595,8 @@ pub fn remove_tag(
     tag_id: String,
 ) -> Result<usize, String> {
     let changed = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let n = tags::unapply(&conn, &node_ids, &tag_id).map_err(|e| e.to_string())?;
         health::recompute_many(&conn, &node_ids).map_err(|e| e.to_string())?;
         n
@@ -412,7 +608,8 @@ pub fn remove_tag(
 #[tauri::command]
 pub fn rename_tag(app: AppHandle, db: State<Db>, tag_id: String, name: String) -> Result<(), String> {
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         tags::rename(&conn, &tag_id, &name).map_err(|e| e.to_string())?;
     }
     let _ = app.emit("archiva:changed", ());
@@ -427,7 +624,8 @@ pub fn set_tag_facet(
     facet: String,
 ) -> Result<(), String> {
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         tags::set_facet(&conn, &tag_id, &facet).map_err(|e| e.to_string())?;
         // Every item carrying it just changed which facet it has filled.
         health::recompute_all(&conn).map_err(|e| e.to_string())?;
@@ -441,7 +639,8 @@ pub fn set_tag_facet(
 #[tauri::command]
 pub fn delete_tag(app: AppHandle, db: State<Db>, tag_id: String) -> Result<usize, String> {
     let carried = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let n = tags::delete(&conn, &tag_id).map_err(|e| e.to_string())?;
         health::recompute_all(&conn).map_err(|e| e.to_string())?;
         n
@@ -458,7 +657,8 @@ pub fn merge_tags(
     into: String,
 ) -> Result<usize, String> {
     let moved = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let n = tags::merge(&conn, &from, &into).map_err(|e| e.to_string())?;
         health::recompute_all(&conn).map_err(|e| e.to_string())?;
         n
@@ -470,7 +670,8 @@ pub fn merge_tags(
 #[tauri::command]
 pub fn reorder_tag(app: AppHandle, db: State<Db>, tag_id: String, to: i64) -> Result<(), String> {
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         tags::reorder(&conn, &tag_id, to).map_err(|e| e.to_string())?;
     }
     let _ = app.emit("archiva:changed", ());
@@ -493,7 +694,8 @@ pub fn promote_tag(
     strip_tag: bool,
 ) -> Result<PromotedDto, String> {
     let out = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let p = tags::promote_to_collector(&conn, &tag_id, name.as_deref(), strip_tag)
             .map_err(|e| e.to_string())?;
         health::recompute_all(&conn).map_err(|e| e.to_string())?;
@@ -510,7 +712,8 @@ pub fn promote_tag(
 
 #[tauri::command]
 pub fn duplicate_tags(db: State<Db>) -> Result<Vec<DuplicatePair>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     suggest::near_duplicates(&conn).map_err(|e| e.to_string())
 }
 
@@ -526,7 +729,8 @@ pub fn accept_suggestion(
     name: String,
 ) -> Result<String, String> {
     let tag_id = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let tag_id = tags::ensure(&conn, &name, &facet).map_err(|e| e.to_string())?;
         tags::apply(&conn, &[node_id.clone()], &tag_id).map_err(|e| e.to_string())?;
         health::recompute(&conn, &node_id).map_err(|e| e.to_string())?;
@@ -544,7 +748,8 @@ pub fn dismiss_suggestion(
     kind: String,
 ) -> Result<(), String> {
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         suggest::dismiss(&conn, &key, &kind).map_err(|e| e.to_string())?;
     }
     let _ = app.emit("archiva:changed", ());
@@ -563,7 +768,8 @@ pub fn add_remote_item(
     title: Option<String>,
 ) -> Result<String, String> {
     let id = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         let id = identity::add_remote(&conn, &url, title.as_deref()).map_err(|e| e.to_string())?;
         health::recompute(&conn, &id).map_err(|e| e.to_string())?;
         id
@@ -576,7 +782,8 @@ pub fn add_remote_item(
 #[tauri::command]
 pub fn recheck_availability(app: AppHandle, db: State<Db>) -> Result<Recheck, String> {
     let out = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         identity::recheck(&conn).map_err(|e| e.to_string())?
     };
     let _ = app.emit("archiva:changed", ());
@@ -589,7 +796,8 @@ pub fn recheck_availability(app: AppHandle, db: State<Db>) -> Result<Recheck, St
 /// interface shows this and waits.
 #[tauri::command]
 pub fn preview_removal(db: State<Db>, ids: Vec<String>) -> Result<Preview, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
     removal::preview(&conn, &ids).map_err(|e| e.to_string())
 }
 
@@ -613,7 +821,8 @@ pub fn delete_items(
         .map_err(|e| e.to_string())?
         .join("trash");
     let out = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         if trash_files {
             removal::trash(&conn, &ids, &trash_dir).map_err(|e| e.to_string())?
         } else {
@@ -632,7 +841,8 @@ pub fn delete_items(
 #[tauri::command]
 pub fn clear_library(app: AppHandle, db: State<Db>) -> Result<usize, String> {
     let n = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
         removal::clear_library(&conn).map_err(|e| e.to_string())?
     };
     let _ = app.emit("archiva:changed", ());

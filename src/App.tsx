@@ -5,6 +5,8 @@ import Dock, { DockHandle, PanelKind, PanelParams } from "./dock/Dock";
 import { Rail, type Flyout } from "./dock/Rail";
 import { TaskBar } from "./dock/TaskBar";
 import { ActiveItemProvider, useActiveItem } from "./lib/activeItem";
+import { currentSpace } from "./lib/api";
+import { useArchivaChanged } from "./lib/events";
 import { LIST_OWNING_PANES, isTyping, resolve } from "./lib/shortcuts";
 import { LibraryView } from "./components/library/LibraryView";
 import { ViewerPane } from "./components/viewer/ViewerPane";
@@ -12,6 +14,7 @@ import { InspectorView } from "./components/inspector/InspectorView";
 import { PreviewOverlay } from "./components/preview/PreviewOverlay";
 import { DeleteDialog } from "./components/removal/DeleteDialog";
 import { SourcesFlyout } from "./components/sources/SourcesFlyout";
+import { NoSpace } from "./components/spaces/SpacesPanel";
 import { TagsFlyout } from "./components/tags/TagsFlyout";
 
 function Shell() {
@@ -20,6 +23,11 @@ function Shell() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [flyout, setFlyout] = useState<Flyout | null>(null);
   const [deleting, setDeleting] = useState<string[] | null>(null);
+  // Which library this window is looking at. Null is a first run, or a space
+  // whose drive is not plugged in — neither is an error, and both are the
+  // same screen. Everything below needs a space to read from, so nothing
+  // else is drawn until there is one.
+  const [space, setSpace] = useState<{ name: string } | null | undefined>(undefined);
   const active = useActiveItem();
   const activeId = active.id;
   // The provider hands out a fresh object every render on purpose (it is
@@ -28,6 +36,17 @@ function Shell() {
   // stable listener instead of a new one on every keystroke.
   const activeRef = useRef(active);
   activeRef.current = active;
+
+  const readSpace = useCallback(() => {
+    currentSpace()
+      .then((s) => setSpace(s))
+      .catch(() => setSpace(null));
+  }, []);
+
+  useEffect(readSpace, [readSpace]);
+  // Creating, opening, moving or forgetting a space all emit the same change
+  // event every pane already listens to.
+  useArchivaChanged(readSpace);
 
   const renderPanel = useCallback((params: PanelParams, isActive: boolean) => {
     switch (params.kind) {
@@ -149,6 +168,11 @@ function Shell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [activeId, previewOpen, activeKind, deleting]);
+
+  // `undefined` is "not asked yet" — drawing the first-run screen for the
+  // instant before the answer arrives would flash it on every launch.
+  if (space === undefined) return <div className="shell" />;
+  if (space === null) return <NoSpace />;
 
   return (
     <div className="shell" onClick={() => flyout && setFlyout(null)}>

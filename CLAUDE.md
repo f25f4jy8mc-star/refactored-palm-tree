@@ -30,6 +30,19 @@ The four states in the checklist mean different things:
 | `[ ]` **unbuilt** | Specified in Phase 0, no code exists. |
 | `[?]` **decide** | Waiting on the user. Do not pick one silently — say which way you went and why. |
 
+## Spaces
+
+A **Space** is a folder the user chose, holding one library: its index
+(`archiva.sqlite`), its proxies, the notes written here, and the list of
+folders linked into it. The database is *inside the space*, not in
+application support — that is what makes "self-hosted, your data on your
+disk" true rather than claimed, and it is why `spaces.rs` cannot use a
+database to find its own data: the registry of spaces is a JSON file beside
+the app's settings, read before anything is open.
+
+Spaces are not in the checklist. They came later, from the user, and the
+checklist is the record of decisions taken before that.
+
 ## The two rules everything follows
 
 1. **If two views could disagree about something, it belongs in the model,

@@ -111,6 +111,40 @@ pub fn set_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<()> {
 
 /// Every enabled source's path, which is what a scan must walk in one pass
 /// for its missing-sweep to mean anything.
+/// What "switched off" means, once, as a predicate over a node aliased `n`.
+///
+/// A source you untick is not unwatched and its items are not forgotten:
+/// they stop being *shown*. Tags, links and notes survive untouched, and
+/// ticking it again brings the lot back — which is the difference between
+/// hiding a folder and removing it, and the reason both exist.
+///
+/// `n.locator = s.path OR n.locator LIKE s.path || '/%'` rather than a bare
+/// prefix, so switching off /photos never also hides /photos-old.
+pub const HIDDEN_SQL: &str = "EXISTS (
+        SELECT 1 FROM source s
+         WHERE s.enabled = 0
+           AND n.locator IS NOT NULL
+           AND (n.locator = s.path OR n.locator LIKE s.path || '/%')
+      )";
+
+/// The nodes that predicate hides, for a reader that filters in Rust rather
+/// than in SQL. The same sentence either way — there is one predicate.
+pub fn hidden_ids(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    // Nothing is switched off in most libraries, and asking first is cheaper
+    // than walking every node to be told so.
+    let off: i64 = conn.query_row("SELECT COUNT(*) FROM source WHERE enabled = 0", [], |r| {
+        r.get(0)
+    })?;
+    if off == 0 {
+        return Ok(Default::default());
+    }
+    let mut q = conn.prepare(&format!("SELECT n.id FROM node n WHERE {HIDDEN_SQL}"))?;
+    let out = q
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(out)
+}
+
 pub fn enabled_roots(conn: &Connection) -> Result<Vec<PathBuf>> {
     let mut q = conn.prepare("SELECT path FROM source WHERE enabled = 1 ORDER BY path")?;
     let out = q
@@ -228,5 +262,80 @@ mod tests {
         let c = db();
         assert!(remove(&c, "nope").is_err());
         assert!(set_enabled(&c, "nope", false).is_err());
+    }
+
+    /* ------------------------------------------- switched off, not gone */
+
+    fn indexed(c: &Connection, id: &str, locator: &str) {
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,display_name,locator)
+             VALUES (?1,'media','public.jpeg',?1,?2)",
+            params![id, locator],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn switching_a_source_off_hides_what_is_under_it() {
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        add(&c, "/scans").unwrap();
+        indexed(&c, "a", "/photos/a.jpg");
+        indexed(&c, "b", "/scans/b.jpg");
+
+        assert!(hidden_ids(&c).unwrap().is_empty(), "nothing is off yet");
+        set_enabled(&c, &photos, false).unwrap();
+        let hidden = hidden_ids(&c).unwrap();
+        assert!(hidden.contains("a"));
+        assert!(!hidden.contains("b"), "the other folder is untouched");
+    }
+
+    #[test]
+    fn hiding_a_folder_never_hides_the_one_whose_name_it_starts_with() {
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        add(&c, "/photos-old").unwrap();
+        indexed(&c, "new", "/photos/a.jpg");
+        indexed(&c, "old", "/photos-old/b.jpg");
+
+        set_enabled(&c, &photos, false).unwrap();
+        let hidden = hidden_ids(&c).unwrap();
+        assert!(hidden.contains("new"));
+        assert!(!hidden.contains("old"), "/photos-old is a different folder");
+    }
+
+    #[test]
+    fn switching_it_back_on_brings_everything_back() {
+        // Hidden, not forgotten: the rows were never touched, so the tags,
+        // links and notes on them are exactly where they were.
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        indexed(&c, "a", "/photos/a.jpg");
+
+        set_enabled(&c, &photos, false).unwrap();
+        assert_eq!(hidden_ids(&c).unwrap().len(), 1);
+        let still: i64 = c
+            .query_row("SELECT COUNT(*) FROM node WHERE id = 'a'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still, 1, "the item is still in the library");
+
+        set_enabled(&c, &photos, true).unwrap();
+        assert!(hidden_ids(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn something_that_came_from_nowhere_on_disk_is_never_hidden() {
+        // A board you made here has no locator, so no folder can switch it
+        // off — it does not belong to one.
+        let c = db();
+        let photos = add(&c, "/photos").unwrap();
+        c.execute(
+            "INSERT INTO node(id,node_type,content_type,display_name)
+             VALUES ('board','collector','app.archiva.collector.board','My board')",
+            [],
+        )
+        .unwrap();
+        set_enabled(&c, &photos, false).unwrap();
+        assert!(hidden_ids(&c).unwrap().is_empty());
     }
 }

@@ -101,6 +101,22 @@ export interface TreeColumn {
   rows: Row[];
 }
 
+/** One Space: a folder you chose, holding this library's index, its proxies
+ * and the notes written here, plus the list of folders linked into it.
+ * `reachable` is false when the folder is not there right now — a drive that
+ * is not plugged in is an ordinary state, not a lost library. */
+export interface Space {
+  id: string;
+  name: string;
+  root: string;
+  createdAt: string;
+  lastOpenedAt: string | null;
+  reachable: boolean;
+  isCurrent: boolean;
+  /** Bytes, by what made them: `index`, `proxies`, `notes`. */
+  holds: Record<string, number>;
+}
+
 /** One watched folder (migration 002). `item_count` is derived from the
  * nodes underneath it, never stored. */
 export interface Source {

@@ -16,6 +16,7 @@ import type {
   RemovalResult,
   ScanReport,
   Source,
+  Space,
   Tag,
   TreeColumn,
   ViewPrefs,
@@ -57,6 +58,48 @@ export function treeColumns(
 
 export function nodeDetail(id: string): Promise<Detail> {
   return invoke("node_detail", { id });
+}
+
+/* -------------------------------------------------------------- spaces */
+
+/** Every space this machine knows about, most recently opened first. */
+export function listSpaces(): Promise<Space[]> {
+  return invoke("list_spaces");
+}
+
+/** The space this window is looking at. Null on a first run, and null when
+ * the last one's folder is not there — both are a screen, not an error. */
+export function currentSpace(): Promise<Space | null> {
+  return invoke("current_space");
+}
+
+/** Make a space in a folder the user chose, and open it. */
+export function createSpace(name: string, path: string): Promise<Space> {
+  return invoke("create_space", { name, path });
+}
+
+export function openSpace(id: string): Promise<Space> {
+  return invoke("open_space", { id });
+}
+
+/** Open a folder that already holds a space — a backup drive, another
+ * machine's copy. A folder with no space in it becomes one. */
+export function openSpaceFolder(path: string): Promise<Space> {
+  return invoke("open_space_folder", { path });
+}
+
+export function renameSpace(id: string, name: string): Promise<Space> {
+  return invoke("rename_space", { id, name });
+}
+
+/** Move a space's folder, with everything in it. */
+export function moveSpace(id: string, path: string): Promise<Space> {
+  return invoke("move_space", { id, path });
+}
+
+/** Stop listing a space here. Never deletes the folder. */
+export function forgetSpace(id: string): Promise<void> {
+  return invoke("forget_space", { id });
 }
 
 /* ------------------------------------------------------------- sources */

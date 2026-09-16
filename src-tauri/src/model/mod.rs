@@ -35,6 +35,7 @@ pub mod scan;
 pub mod search;
 pub mod signals;
 pub mod sources;
+pub mod spaces;
 pub mod suggest;
 pub mod tags;
 pub mod tree;

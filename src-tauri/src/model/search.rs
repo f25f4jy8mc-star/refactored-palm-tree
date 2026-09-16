@@ -105,6 +105,9 @@ pub fn search(conn: &Connection, query: &str, opts: &Options) -> Result<Vec<Hit>
         return Ok(Vec::new());
     };
     let limit = opts.limit.max(1) as i64;
+    // Search hides what the listings hide: finding an item you switched a
+    // folder off to stop seeing would make the tickbox a half-measure.
+    let hidden = super::sources::hidden_ids(conn)?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut hits = Vec::new();
 
@@ -119,6 +122,9 @@ pub fn search(conn: &Connection, query: &str, opts: &Options) -> Result<Vec<Hit>
     // lands, this loop only needs `("tags", MatchKind::ViaTag)` added.
     for (column, kind) in [("title", MatchKind::Name), ("body", MatchKind::Body)] {
         for (node_id, snippet) in column_hits(conn, column, &terms, limit)? {
+            if hidden.contains(&node_id) {
+                continue;
+            }
             if seen.contains(&node_id) {
                 continue;
             }
@@ -152,8 +158,10 @@ mod tests {
     fn seed() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.pragma_update(None, "foreign_keys", "ON").unwrap();
-        c.execute_batch(include_str!("../../migrations_model/001_model.sql"))
-            .unwrap();
+        // Every migration, not just the model: `sources` lives in 002 and the
+        // listings ask it what is switched off. A test database that is not
+        // the real schema is a test that proves something else.
+        crate::db::migrate(&c).unwrap();
         let mk = |id: &str, ct: &str, name: &str| {
             c.execute(
                 "INSERT INTO node(id, node_type, content_type, content_type_tree, display_name, icon_kind)

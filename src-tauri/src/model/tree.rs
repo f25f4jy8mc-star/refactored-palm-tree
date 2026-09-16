@@ -56,24 +56,33 @@ const WATCHED_ROOTS: &str = "SELECT n.id FROM node n
 /// sort is (case-insensitive, tie-broken by id so ties are stable across
 /// calls) — `scope = None` is "nothing contains this", not "everything".
 fn children_of(conn: &Connection, scope: Option<&str>, root: Root) -> Result<Vec<(String, String)>> {
-    let scoped = "SELECT n.id, n.display_name FROM node n
-           JOIN edge e ON e.source_id = n.id AND e.kind = 'contains' AND e.target_id = ?1";
+    // Every column hides what a switched-off source holds, by the one
+    // predicate that decides what "switched off" means (`sources`).
+    let hidden = super::sources::HIDDEN_SQL;
+    let scoped = format!(
+        "SELECT n.id, n.display_name FROM node n
+           JOIN edge e ON e.source_id = n.id AND e.kind = 'contains' AND e.target_id = ?1
+          WHERE NOT {hidden}"
+    );
     // `contains` runs item -> collector (source is the contained item, target
     // is the collector), matching the compass table in §1.7 — "contains
     // (item -> collector)". A root member is a node that is nobody's *source*
     // here, not nobody's target.
-    let library = "SELECT n.id, n.display_name FROM node n
+    let library = format!(
+        "SELECT n.id, n.display_name FROM node n
           WHERE n.node_type <> 'tag' AND ?1 IS NULL
+            AND NOT {hidden}
             AND NOT EXISTS (
               SELECT 1 FROM edge e WHERE e.kind = 'contains' AND e.source_id = n.id
             )"
-    .to_string();
+    );
     // Held by nothing except a watched root: uncontained items and gatherings
     // as before, plus whatever sits at the top of each watched folder.
     let workspace = format!(
         "WITH watched AS ({WATCHED_ROOTS})
          SELECT n.id, n.display_name FROM node n
           WHERE n.node_type <> 'tag' AND ?1 IS NULL
+            AND NOT {hidden}
             AND n.id NOT IN (SELECT id FROM watched)
             AND NOT EXISTS (
               SELECT 1 FROM edge e
@@ -82,7 +91,7 @@ fn children_of(conn: &Connection, scope: Option<&str>, root: Root) -> Result<Vec
             )"
     );
     let sql = match (scope, root) {
-        (Some(_), _) => scoped.to_string(),
+        (Some(_), _) => scoped,
         (None, Root::Library) => library,
         (None, Root::Workspace) => workspace,
     };
@@ -181,8 +190,10 @@ mod tests {
     fn seed() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.pragma_update(None, "foreign_keys", "ON").unwrap();
-        c.execute_batch(include_str!("../../migrations_model/001_model.sql"))
-            .unwrap();
+        // Every migration, not just the model: `sources` lives in 002 and the
+        // listings ask it what is switched off. A test database that is not
+        // the real schema is a test that proves something else.
+        crate::db::migrate(&c).unwrap();
         let mk_media = |id: &str, name: &str| {
             c.execute(
                 "INSERT INTO node(id,node_type,content_type,content_type_tree,display_name,icon_kind)
@@ -274,6 +285,29 @@ mod tests {
         let cols = workspace(&c, None, &["sub-folder".to_string()]).unwrap();
         assert_eq!(cols.len(), 2);
         assert_eq!(names(&cols[1]), vec!["Arcade"]);
+    }
+
+    #[test]
+    fn a_cascade_hides_what_a_switched_off_source_holds() {
+        // The same predicate the Library uses, so a folder you unticked is
+        // not still reachable by walking columns into it.
+        let c = seed_watched();
+        // A second watched folder, holding only Cover — the seed's own
+        // /photos covers Bergamo as well, and switching that off would
+        // prove nothing about one item.
+        let src = crate::model::sources::add(&c, "/scans").unwrap();
+        c.execute(
+            "UPDATE node SET locator = '/scans/cover.jpg' WHERE id = 'top-photo'",
+            [],
+        )
+        .unwrap();
+
+        let before = tree_from(&c, Some("root-folder"), &[]).unwrap();
+        assert!(names(&before[0]).contains(&"Cover"));
+
+        crate::model::sources::set_enabled(&c, &src, false).unwrap();
+        let after = tree_from(&c, Some("root-folder"), &[]).unwrap();
+        assert_eq!(names(&after[0]), vec!["Bergamo"], "Cover is switched off");
     }
 
     #[test]

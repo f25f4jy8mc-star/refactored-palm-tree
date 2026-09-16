@@ -7,11 +7,31 @@ use commands::Db;
 use std::sync::Mutex;
 use tauri::Manager;
 
+/// Open the space that was open last, if there still is one.
+///
+/// Neither a missing space nor an unreachable one is a startup failure: a
+/// first run has none, and a space on a drive that is not plugged in is an
+/// ordinary Tuesday. Both arrive at the same place — a window with no space
+/// open, which is a screen, not an error.
 fn start(app: &tauri::App) -> anyhow::Result<()> {
-    let data_dir = app.path().app_data_dir()?;
-    std::fs::create_dir_all(&data_dir)?;
-    let conn = db::open(&data_dir.join("archiva-model.sqlite"))?;
-    app.manage(Db(Mutex::new(conn)));
+    let app_data = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&app_data)?;
+
+    let open = match model::spaces::current(&app_data)? {
+        Some(space) => match model::spaces::open(&app_data, &space.id) {
+            Ok((space, conn)) => Some(commands::Open { space, conn }),
+            Err(e) => {
+                eprintln!("The last space could not be opened: {e:#}");
+                None
+            }
+        },
+        None => None,
+    };
+
+    app.manage(Db {
+        open: Mutex::new(open),
+        app_data,
+    });
     Ok(())
 }
 
@@ -42,6 +62,14 @@ pub fn run() {
             commands::node_detail,
             commands::node_record,
             commands::note_body,
+            commands::list_spaces,
+            commands::current_space,
+            commands::open_space,
+            commands::create_space,
+            commands::open_space_folder,
+            commands::rename_space,
+            commands::move_space,
+            commands::forget_space,
             commands::list_sources,
             commands::add_source,
             commands::remove_source,
