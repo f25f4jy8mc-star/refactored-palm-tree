@@ -18,7 +18,6 @@
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 
 import {
   acceptSuggestion,
@@ -28,13 +27,14 @@ import {
   listTags,
   nodeRecord,
   removeTag,
+  revealInFileManager,
 } from "../../lib/api";
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
 import {
   CAPABILITY_LABEL,
   openDestinations,
-  previewSource,
+  previewKind,
   type Capability,
   type Destination,
   type OpenOption,
@@ -42,6 +42,7 @@ import {
 import type { FacetSlot, ItemRecord, Link, Row, Slot, Tag } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "../library/Thumbnail";
+import { PreviewStage } from "../preview/PreviewStage";
 
 /** The four directions, in the order the cross draws them. The sense is kept
  * beside the name because "north" alone says nothing — and because N↔S invert
@@ -92,7 +93,7 @@ function OpenInMenu({
   const options: OpenOption[] = openDestinations(at.node);
   const box = useRef<HTMLDivElement>(null);
 
-  // Any click outside, any scroll, or Escape.
+  // A click outside, a deliberate scroll, a resize, or Escape.
   //
   // "Outside" is asked of the element, not of the event's phase: the listener
   // is in capture so a click that would also select something behind the menu
@@ -100,6 +101,12 @@ function OpenInMenu({
   // `stopPropagation` on the menu could not have saved it. Without the
   // containment check the menu unmounted on mousedown and the click never
   // reached the item, which looked exactly like a button that did nothing.
+  //
+  // `wheel`, not `scroll`: the menu is fixed and anchored to where the
+  // pointer was, so a scroll does not carry it away from anything — and a
+  // `scroll` listener also fires for scrolling nothing asked for. The pane
+  // behind settling its own layout was closing the menu half a second after
+  // it opened, which reads as a menu that will not stay up.
   useEffect(() => {
     const away = (e: Event) => {
       if (box.current?.contains(e.target as Node)) return;
@@ -112,11 +119,13 @@ function OpenInMenu({
       }
     };
     window.addEventListener("mousedown", away, true);
-    window.addEventListener("scroll", away, true);
+    window.addEventListener("wheel", away, true);
+    window.addEventListener("resize", onClose);
     window.addEventListener("keydown", key, true);
     return () => {
       window.removeEventListener("mousedown", away, true);
-      window.removeEventListener("scroll", away, true);
+      window.removeEventListener("wheel", away, true);
+      window.removeEventListener("resize", onClose);
       window.removeEventListener("keydown", key, true);
     };
   }, [onClose]);
@@ -418,13 +427,10 @@ export function InspectorView({ isActive, onOpen }: Props) {
   const [known, setKnown] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // The head's preview, opened out to the width of the pane. Off by default:
-  // the Inspector is a reading surface, and a picture the size of the panel
-  // pushes everything that describes it below the fold.
-  const [expanded, setExpanded] = useState(false);
-  // An image that will not load is not offered as one. Same reasoning as
-  // `Thumbnail`: a broken frame reads as a broken *file*.
-  const [shotFailed, setShotFailed] = useState(false);
+  // The head's preview, open to the width of the pane. On by default: the
+  // first question about an item is usually what it looks like, and the
+  // record below is reference you go to second.
+  const [expanded, setExpanded] = useState(true);
   const slot = useTaskbarSlot();
 
   // Tagging writes to the whole selection; everything else describes the one
@@ -454,12 +460,9 @@ export function InspectorView({ isActive, onOpen }: Props) {
     load();
   }, [load]);
 
-  // A new item is a new decision. Leaving it open would mean the pane's
-  // shape depended on what you happened to be looking at two clicks ago.
-  useEffect(() => {
-    setExpanded(false);
-    setShotFailed(false);
-  }, [id]);
+  // A new item is a new decision, and the default is open — so a pane you
+  // collapsed does not stay collapsed for everything you look at after.
+  useEffect(() => setExpanded(true), [id]);
 
   /** Open a compass entry somewhere else.
    *
@@ -537,38 +540,49 @@ export function InspectorView({ isActive, onOpen }: Props) {
     const { identity, source, proxies, classification, health, history, node, attributes, slots, suggestions } = rec;
     const size = formatBytes(source.sizeBytes);
 
-    // The same rule Quick Look uses, from the same place — the original when
-    // the registry says it is reachable, the proxies otherwise. Only an image
-    // can be drawn inline; anything else would be a broken frame pretending
-    // to be a preview.
-    const preview = previewSource({
-      capabilities: node.capabilities,
+    // What can be drawn at all, and therefore whether the head has a preview
+    // to open out. `previewKind` reads the registry's own answer — the same
+    // one a double-click follows — so this pane and Quick Look can never
+    // disagree about which files can be shown.
+    // `none` means there is no renderer for this — a collector, or a file
+    // that is not reachable. Opening a placeholder out to the width of the
+    // panel would be a large way of saying nothing.
+    const canExpand = previewKind(node) !== "none";
+    const open = expanded && canExpand;
+    const stage = {
+      node,
       locator: source.locator,
       previewRef: proxies.previewRef,
       thumbRef: proxies.thumbRef,
-    });
-    const showable = node.icon_kind === "image" && !!preview && !shotFailed;
+      playableRef: proxies.playableRef,
+    };
 
     return (
       <div className="inspect">
-        <div className="inspect-head">
+        {/* One element, two sizes. Collapsing does not swap the preview for a
+            thumbnail — it makes the same box 56px, and the still inside it
+            shrinks. Open by default, because the first question about an item
+            is usually what it looks like. */}
+        <div className={"inspect-head" + (open ? " expanded" : "")}>
           <button
-            className="inspect-thumb"
-            title={showable ? (expanded ? "Collapse preview" : "Expand preview") : undefined}
-            disabled={!showable}
+            className="inspect-shot"
+            title={open ? "Collapse preview" : "Expand preview to the panel"}
+            aria-expanded={open}
+            disabled={!canExpand}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => setExpanded((v) => !v)}
           >
-            <Thumbnail item={node} />
+            <PreviewStage item={stage} compact={!open} />
           </button>
           <div className="inspect-headings">
             <div className="inspect-title">{identity.displayName}</div>
             <div className="inspect-sub">{identity.displaySubtitle}</div>
           </div>
-          {showable && (
+          {canExpand && (
             <button
-              className={"btn" + (expanded ? " on" : "")}
-              title={expanded ? "Collapse preview" : "Expand preview to the panel"}
-              aria-expanded={expanded}
+              className={"btn" + (open ? " on" : "")}
+              title={open ? "Collapse preview" : "Expand preview to the panel"}
+              aria-expanded={open}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setExpanded((v) => !v)}
             >
@@ -576,20 +590,6 @@ export function InspectorView({ isActive, onOpen }: Props) {
             </button>
           )}
         </div>
-
-        {expanded && showable && (
-          // Full panel width, and as tall as the image needs up to a limit —
-          // an 8000px portrait would otherwise be one long scroll with the
-          // record pushed off the end of it.
-          <div className="inspect-preview">
-            <img
-              src={convertFileSrc(preview as string)}
-              alt=""
-              draggable={false}
-              onError={() => setShotFailed(true)}
-            />
-          </div>
-        )}
 
         {error && <div className="inspect-error">{error}</div>}
 
@@ -740,6 +740,25 @@ export function InspectorView({ isActive, onOpen }: Props) {
           <h3>
             Source
             <span className="count">{SOURCE_LABEL[source.sourceKind] ?? source.sourceKind}</span>
+            {/* `reveal` is the registry's answer to "is there a place on this
+                machine to open": a local file that is present. A derived
+                folder Collector is not granted it, and neither is a file that
+                has gone missing — so this button is never offered for
+                something the file manager could not find. */}
+            {node.capabilities.includes("reveal") && source.locator && (
+              <button
+                className="btn"
+                title={`Show ${source.filename ?? identity.displayName} in the file manager`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() =>
+                  revealInFileManager(source.locator as string).catch((e) =>
+                    setError(String(e)),
+                  )
+                }
+              >
+                Open item location
+              </button>
+            )}
           </h3>
           <dl>
             <dt>Availability</dt>

@@ -151,6 +151,13 @@ export interface Detail {
   sizeBytes: number | null;
 }
 
+/** A note's text, from the file on disk or from the `note` table (§1.3). */
+export interface NoteBody {
+  text: string;
+  truncated: boolean;
+  storage: "file" | "inline";
+}
+
 export interface ScanReport {
   seen: number;
   created: number;

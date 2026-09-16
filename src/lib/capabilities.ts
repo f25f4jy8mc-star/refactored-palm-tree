@@ -104,6 +104,49 @@ export function previewSource(parts: PreviewParts): string | null {
   return previewRef ?? thumbRef ?? locator;
 }
 
+/* ------------------------------------------------------ how to render it */
+
+export type PreviewKind =
+  | "image"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "text"
+  | "model"
+  | "none";
+
+/**
+ * Which renderer draws this item, from what the registry already resolved.
+ *
+ * `openTarget` is the same ordered rule a double-click uses, so the two can
+ * never disagree about what an item *is*; this only turns that answer into a
+ * component. Audio and video both resolve to `play` — the registry has one
+ * grant for audiovisual content — so the split between them is `icon_kind`,
+ * which `content_type::icon_kind` derived from the conformance closure
+ * server-side. No extension is compared anywhere (G17).
+ *
+ * `none` is an honest answer, not a failure: a collector has nothing to draw,
+ * and a file that is missing has had `preview` withheld.
+ */
+export function previewKind(row: HasCapabilities & { icon_kind: string }): PreviewKind {
+  switch (openTarget(row)) {
+    case "play":
+      return row.icon_kind === "audio" ? "audio" : "video";
+    case "paginate":
+      return "pdf";
+    case "edit":
+      return "text";
+    case "orbit":
+      return "model";
+    case "preview":
+      return row.icon_kind === "image" ? "image" : "none";
+    default:
+      // `fetch` (not here yet) and `expand` (a collector) have no still to
+      // show, and neither does an item the registry granted nothing for.
+      return "none";
+  }
+}
+
 /* ------------------------------------------------------------- open in… */
 
 export type Destination = "viewer" | "library" | "graph";

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import type {
   Detail,
@@ -9,6 +10,7 @@ import type {
   ItemRecord,
   ListOptions,
   ListPage,
+  NoteBody,
   Recheck,
   RemovalPreview,
   RemovalResult,
@@ -94,6 +96,13 @@ export function setViewPrefs(scopeId: string, paneKind: string, prefs: ViewPrefs
   return invoke("set_view_prefs", { scopeId, paneKind, prefs });
 }
 
+/** Show a file where it lives, in the machine's own file manager. Offered
+ * only where the registry granted `reveal` — a local file that is present —
+ * so this is never asked about a path the file manager could not find. */
+export function revealInFileManager(path: string): Promise<void> {
+  return revealItemInDir(path);
+}
+
 /** Native folder picker. Returns null when the user cancels. */
 export async function pickFolder(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false });
@@ -105,6 +114,12 @@ export async function pickFolder(): Promise<string | null> {
 /** Everything known about one item. The Inspector's single read. */
 export function nodeRecord(id: string): Promise<ItemRecord> {
   return invoke("node_record", { id });
+}
+
+/** A note's text, for showing it. Null for anything that is not a note —
+ * the view asks only when the registry granted `edit`. */
+export function noteBody(id: string): Promise<NoteBody | null> {
+  return invoke("note_body", { id });
 }
 
 /* -------------------------------------------------- classification */

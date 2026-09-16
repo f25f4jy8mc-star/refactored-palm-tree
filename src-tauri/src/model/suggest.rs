@@ -231,8 +231,18 @@ fn filled_facets(conn: &Connection, node_id: &str) -> Result<Vec<String>> {
 /// The tree is not consulted — "Image" would be a Format tag that says nothing
 /// the icon does not already say.
 fn format_name(content_type: &str) -> Option<String> {
+    // Archiva's own types are not formats. The leaf of
+    // `app.archiva.note.file` is "file", and "File as format" is a
+    // suggestion that says nothing — except for a note on disk, which really
+    // is markdown and is worth offering as such.
+    if content_type == "app.archiva.note.file" {
+        return Some("Markdown".into());
+    }
+    if content_type.starts_with("app.archiva.") {
+        return None;
+    }
     let leaf = content_type.rsplit('.').next()?;
-    if leaf.is_empty() || content_type == "app.archiva.virtual" {
+    if leaf.is_empty() {
         return None;
     }
     Some(match leaf {
@@ -243,6 +253,16 @@ fn format_name(content_type: &str) -> Option<String> {
         "pdf" => "PDF".into(),
         "mpeg-4" | "mpeg4" => "MP4".into(),
         "quicktime-movie" => "QuickTime".into(),
+        // The leaf of an audio type is a mouthful nobody writes on a tag:
+        // "com.microsoft.waveform-audio" is a WAV.
+        "waveform-audio" => "WAV".into(),
+        "aiff-audio" => "AIFF".into(),
+        "mp3" | "mpeg-3-audio" => "MP3".into(),
+        "aac-audio" => "AAC".into(),
+        "flac" => "FLAC".into(),
+        "ogg" => "OGG".into(),
+        "wavefront-obj" => "OBJ".into(),
+        "gltf" => "glTF".into(),
         other => {
             let mut c = other.chars();
             match c.next() {
@@ -687,6 +707,19 @@ mod tests {
         let out = for_node(&c, "n").unwrap();
         let era = out.iter().find(|s| s.facet == "era").expect("an era");
         assert_eq!(era.name, "2020s");
+    }
+
+    #[test]
+    fn archivas_own_types_are_not_offered_as_formats() {
+        // The leaf of `app.archiva.note.file` is "file", and "File as format"
+        // is a suggestion that says nothing.
+        assert_eq!(format_name("app.archiva.note.file").as_deref(), Some("Markdown"));
+        assert_eq!(format_name("app.archiva.virtual"), None);
+        assert_eq!(format_name("app.archiva.collector.folder"), None);
+        assert_eq!(format_name("public.jpeg").as_deref(), Some("JPEG"));
+        // And a leaf nobody would write on a tag gets the name people use.
+        assert_eq!(format_name("com.microsoft.waveform-audio").as_deref(), Some("WAV"));
+        assert_eq!(format_name("public.wavefront-obj").as_deref(), Some("OBJ"));
     }
 
     #[test]

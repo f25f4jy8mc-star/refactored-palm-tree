@@ -17,6 +17,7 @@ use crate::model::extract::RealExtractor;
 use crate::model::facets::{self, Facet};
 use crate::model::health;
 use crate::model::identity::{self, Recheck};
+use crate::model::notetext;
 use crate::model::projections::{self, Detail, ListOptions, ListPage};
 use crate::model::record::{self, Record};
 use crate::model::folders;
@@ -334,6 +335,15 @@ pub fn node_detail(db: State<Db>, id: String) -> Result<DetailDto, String> {
 pub fn node_record(db: State<Db>, id: String) -> Result<Record, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     record::record(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// The text of a note, for showing it. `None` for anything that is not a
+/// note — the view asks only when the registry granted `edit`, and this is
+/// the second half of the same answer rather than a licence to read any path.
+#[tauri::command]
+pub fn note_body(db: State<Db>, id: String) -> Result<Option<notetext::NoteBody>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    notetext::body(&conn, &id).map_err(|e| format!("{e:#}"))
 }
 
 /* ------------------------------------------------------ classification */

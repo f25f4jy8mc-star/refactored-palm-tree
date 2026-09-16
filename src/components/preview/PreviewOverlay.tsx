@@ -7,17 +7,16 @@
 // its own next-and-previous meant two ideas of "the current item", and the
 // list and the preview drifted apart the moment either one was touched.
 //
-// What it can draw is decided by capability, never by file extension: an
-// image previews, a PDF or a video says plainly that its viewer isn't
-// built rather than showing a broken frame.
+// What it can draw is decided by capability, never by file extension — and
+// the drawing itself is `PreviewStage`, shared with the Inspector's head so
+// the two can never disagree about which files can be shown.
 
 import { useCallback, useEffect, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { nodeDetail } from "../../lib/api";
 import { useActiveItem } from "../../lib/activeItem";
-import { openTarget } from "../../lib/capabilities";
 import type { Detail } from "../../lib/types";
+import { PreviewStage } from "./PreviewStage";
 
 function formatBytes(bytes: number | null): string | null {
   if (!bytes) return null;
@@ -29,7 +28,6 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [info, setInfo] = useState(false);
   const [filled, setFilled] = useState(false);
-  const [failed, setFailed] = useState(false);
   // Reads the active item rather than a frozen id, so when the list behind
   // moves its cursor, this overlay and the Inspector move with it. One idea
   // of "the current item" — the seam the old build's inspector/preview
@@ -38,7 +36,6 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     if (!id) return;
-    setFailed(false);
     nodeDetail(id).then(setDetail).catch(() => setDetail(null));
   }, [id]);
 
@@ -96,15 +93,6 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
   if (!detail) return null;
 
   const { node } = detail;
-  // Full resolution when the original is actually reachable, else the
-  // proxy — which is exactly what `preview` vs `full_res` already encode.
-  const canFullRes = node.capabilities.includes("full_res");
-  const src =
-    canFullRes && detail.locator
-      ? detail.locator
-      : detail.previewRef ?? node.thumb_ref ?? detail.locator;
-  const isImage = node.icon_kind === "image";
-  const target = openTarget(node);
 
   return (
     <div className="preview-backdrop" onClick={onClose}>
@@ -113,20 +101,14 @@ export function PreviewOverlay({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="preview-stage">
-          {isImage && src && !failed ? (
-            <img src={convertFileSrc(src)} alt="" onError={() => setFailed(true)} />
-          ) : (
-            <div className="preview-placeholder">
-              <div className="preview-glyph">{node.display_name.slice(0, 1).toUpperCase()}</div>
-              <div>
-                {failed
-                  ? "That file couldn't be loaded."
-                  : target && target !== "preview"
-                    ? `This opens via ${target} — that viewer isn't built yet.`
-                    : "No preview available for this item."}
-              </div>
-            </div>
-          )}
+          <PreviewStage
+            item={{
+              node,
+              locator: detail.locator,
+              previewRef: detail.previewRef,
+              thumbRef: node.thumb_ref,
+            }}
+          />
         </div>
 
         <div className="preview-bar">

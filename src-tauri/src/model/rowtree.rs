@@ -189,6 +189,54 @@ mod tests {
         .unwrap();
     }
 
+    /// Eight samples of silence, 8-bit mono at 8 kHz. Enough to be a file a
+    /// browser will decode, which is the only thing a transport needs to
+    /// prove.
+    fn minimal_wav() -> Vec<u8> {
+        let samples: [u8; 8] = [128; 8];
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36u32 + samples.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // mono
+        out.extend_from_slice(&8000u32.to_le_bytes()); // sample rate
+        out.extend_from_slice(&8000u32.to_le_bytes()); // byte rate
+        out.extend_from_slice(&1u16.to_le_bytes()); // block align
+        out.extend_from_slice(&8u16.to_le_bytes()); // bits per sample
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+        out.extend_from_slice(&samples);
+        out
+    }
+
+    /// One blank page, with a real cross-reference table so a viewer will
+    /// open it rather than refuse.
+    fn minimal_pdf() -> Vec<u8> {
+        let objects = [
+            "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+            "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+            "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n",
+        ];
+        let mut body = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for o in objects {
+            offsets.push(body.len());
+            body.push_str(o);
+        }
+        let xref_at = body.len();
+        body.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+        for off in &offsets {
+            body.push_str(&format!("{off:010} 00000 n \n"));
+        }
+        body.push_str(&format!(
+            "trailer<</Size {}/Root 1 0 R>>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        body.into_bytes()
+    }
+
     fn contains(c: &Connection, item: &str, folder: &str) {
         c.execute(
             "INSERT INTO edge(id,source_id,target_id,kind) VALUES (?1,?2,?3,'contains')",
@@ -242,12 +290,21 @@ mod tests {
 
         let dir = std::env::temp_dir().join("archiva-fixture-tree");
         std::fs::remove_dir_all(&dir).ok();
+        // A real WAV and a real PDF, not placeholder bytes: the preview draws
+        // a transport for one and the webview's own viewer for the other, and
+        // a file that cannot be decoded proves neither. They also give the
+        // Library an Audio and a Documents section to sort, which nothing
+        // else in this tree does.
+        let wav = minimal_wav();
+        let pdf = minimal_pdf();
         for (rel, bytes) in [
             ("alpha.jpg", &b"a"[..]),
             ("zulu.jpg", &b"z"[..]),
             ("Trips/photo.jpg", &b"p"[..]),
             ("Trips/Bergamo/deep.jpg", &b"d"[..]),
             ("notes/thoughts.md", &b"# Thoughts\n\nSomething."[..]),
+            ("clip.wav", &wav[..]),
+            ("paper.pdf", &pdf[..]),
         ] {
             let path = dir.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -276,6 +333,15 @@ mod tests {
             [],
         )
         .unwrap();
+        // `paginate` is granted only when something recorded a page count —
+        // the real extractor writes it, and the bare one used here does not.
+        c.execute(
+            "INSERT INTO attribute(node_id,key,value,value_num)
+             SELECT id,'page_count','1',1 FROM node WHERE display_name = 'paper'",
+            [],
+        )
+        .unwrap();
+
         crate::model::health::recompute_all(&c).unwrap();
 
         let id_of = |name: &str| -> String {
@@ -503,6 +569,26 @@ mod tests {
             }
         }
 
+        // Every note's text, read before the tree below is deleted. The
+        // text preview reads the file rather than the indexed copy, so a
+        // harness driving it needs what the file actually said.
+        let mut note_bodies = serde_json::Map::new();
+        {
+            let mut q = c
+                .prepare("SELECT node_id FROM note")
+                .unwrap();
+            let ids: Vec<String> = q
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap();
+            drop(q);
+            for id in ids {
+                let body = crate::model::notetext::body(&c, &id).unwrap();
+                note_bodies.insert(id, serde_json::to_value(body).unwrap());
+            }
+        }
+
         // The Viewer's own root, spelled out: what its cascade opens with
         // when nothing scopes it. The walkthrough checks this against the
         // watched folder it must not be showing.
@@ -519,6 +605,7 @@ mod tests {
             "viewerRoot": viewer_root,
             "record": record,
             "records": records,
+            "noteBodies": note_bodies,
         });
         std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).ok();

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { openDestinations, openTarget, previewSource } from "./capabilities";
+import { openDestinations, openTarget, previewKind, previewSource } from "./capabilities";
 
 const media = (caps: string[] = ["preview", "full_res", "link", "tag"]) => ({
   node_type: "media",
@@ -15,6 +15,42 @@ describe("openTarget", () => {
     expect(openTarget({ capabilities: ["preview", "play"] })).toBe("play");
     expect(openTarget({ capabilities: ["preview"] })).toBe("preview");
     expect(openTarget({ capabilities: ["tag", "rename"] })).toBe(null);
+  });
+});
+
+describe("previewKind", () => {
+  const kind = (capabilities: string[], icon_kind: string) =>
+    previewKind({ capabilities, icon_kind });
+
+  it("reads the renderer off the registry, not off a file extension", () => {
+    expect(kind(["preview", "full_res"], "image")).toBe("image");
+    expect(kind(["preview", "play", "seek"], "video")).toBe("video");
+    expect(kind(["preview", "play"], "audio")).toBe("audio");
+    expect(kind(["preview", "paginate"], "document")).toBe("pdf");
+    expect(kind(["preview", "edit"], "note")).toBe("text");
+    expect(kind(["preview", "orbit"], "model")).toBe("model");
+  });
+
+  it("gives nothing to draw for a collector", () => {
+    expect(kind(["expand", "contain"], "folder")).toBe("none");
+  });
+
+  it("gives nothing for an item whose file is gone", () => {
+    // A missing file has `preview` withheld — the registry decided that, and
+    // this only reports it.
+    expect(kind(["tag", "link"], "image")).toBe("none");
+  });
+
+  it("does not claim to draw a type it has no renderer for", () => {
+    // Previewable (the proxy is ready) but not an image: there is no still to
+    // show, and a broken frame would read as a broken file.
+    expect(kind(["preview"], "other")).toBe("none");
+  });
+
+  it("takes the most particular renderer when an item has several", () => {
+    // A PDF that is also previewable paginates — the same order a
+    // double-click follows, so the two cannot disagree.
+    expect(kind(["preview", "paginate", "full_res"], "document")).toBe("pdf");
   });
 });
 

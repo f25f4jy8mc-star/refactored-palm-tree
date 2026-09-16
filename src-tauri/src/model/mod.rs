@@ -25,6 +25,7 @@ pub mod folders;
 pub mod health;
 pub mod identity;
 pub mod mutations;
+pub mod notetext;
 pub mod projections;
 pub mod reconcile;
 pub mod record;

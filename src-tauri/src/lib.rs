@@ -41,6 +41,7 @@ pub fn run() {
             commands::tree_columns,
             commands::node_detail,
             commands::node_record,
+            commands::note_body,
             commands::list_sources,
             commands::add_source,
             commands::remove_source,

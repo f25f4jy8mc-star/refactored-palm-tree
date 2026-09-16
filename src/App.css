@@ -702,19 +702,32 @@ body {
   padding: 16px 18px 72px;
 }
 
+/* The head, at two sizes. Collapsed it is a 56px still beside the name;
+   expanded the same still spans the panel with the name beneath it. One
+   element either way — collapsing resizes the preview rather than swapping
+   it for a different picture of the same thing. */
 .inspect-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  grid-template-areas: "shot headings toggle";
   align-items: center;
   gap: 12px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
 
+.inspect-head.expanded {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "shot shot"
+    "headings toggle";
+}
+
 /* A button, because it is one — clicking it opens the preview out. It keeps
    the plain look either way; a thumbnail that suddenly had a button's chrome
    would read as a control rather than as the thing it shows. */
-.inspect-thumb {
-  flex: 0 0 auto;
+.inspect-shot {
+  grid-area: shot;
   width: 56px;
   height: 56px;
   padding: 0;
@@ -728,49 +741,76 @@ body {
   color: var(--ink-2);
 }
 
-.inspect-thumb svg {
+.inspect-shot:not(:disabled) {
+  cursor: pointer;
+}
+
+.inspect-shot:not(:disabled):hover {
+  border-color: var(--line-2);
+}
+
+.inspect-shot svg {
   width: 26px;
   height: 26px;
 }
 
-.inspect-thumb img {
+.inspect-shot .preview-still {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.inspect-thumb:not(:disabled) {
-  cursor: pointer;
-}
-
-.inspect-thumb:not(:disabled):hover {
-  border-color: var(--line-2);
-}
-
-.inspect-headings {
-  flex: 1;
-  min-width: 0;
-}
-
-/* The expanded preview: the width of the panel, and no taller than half the
-   panel's height — an 8000px portrait would otherwise be one long scroll
-   with the record pushed off the end of it. */
-.inspect-preview {
-  margin: 12px 0 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--wash);
-  display: flex;
-  justify-content: center;
-}
-
-.inspect-preview img {
-  display: block;
+/* Opened out: the width of the panel, and no taller than half its height —
+   an 8000px portrait would otherwise be one long scroll with the record
+   pushed off the end of it. */
+.inspect-head.expanded .inspect-shot {
   width: 100%;
   height: auto;
   max-height: 50vh;
+  min-height: 120px;
+  border-color: var(--line);
+  border-radius: 8px;
+  cursor: zoom-out;
+  margin-bottom: 4px;
+}
+
+.inspect-head.expanded .inspect-shot .preview-still {
+  height: auto;
+  max-height: 50vh;
   object-fit: contain;
+}
+
+.inspect-head.expanded .inspect-shot .preview-player,
+.inspect-head.expanded .inspect-shot .preview-pdf,
+.inspect-head.expanded .inspect-shot .preview-text,
+.inspect-head.expanded .inspect-shot .preview-audio {
+  width: 100%;
+}
+
+.inspect-head.expanded .inspect-shot .preview-pdf {
+  height: 50vh;
+}
+
+/* Text is as tall as the text, up to the cap — a five-line note in a
+   450px box is mostly box. */
+.inspect-head.expanded .inspect-shot .preview-text {
+  height: auto;
+  max-height: 50vh;
+}
+
+/* A player is a control, not a picture: clicking it must reach the transport
+   rather than fold the head away. */
+.inspect-head.expanded .inspect-shot:has(.preview-player, .preview-pdf, .preview-text) {
+  cursor: default;
+}
+
+.inspect-headings {
+  grid-area: headings;
+  min-width: 0;
+}
+
+.inspect-head .btn {
+  grid-area: toggle;
 }
 
 .inspect-title {
@@ -801,6 +841,14 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.inspect-block h3 .btn {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 10px;
+  letter-spacing: 0.02em;
+  text-transform: none;
 }
 
 .inspect-block .count {
@@ -1141,6 +1189,93 @@ body {
   font-family: "IBM Plex Mono", monospace;
   font-size: 24px;
   color: var(--ink-2);
+}
+
+.preview-glyph svg {
+  width: 28px;
+  height: 28px;
+}
+
+/* --------------------------------------------------- preview renderers */
+
+.preview-still {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.preview-player {
+  width: 100%;
+  max-height: 100%;
+  background: #000;
+  border-radius: 6px;
+}
+
+/* Audio has no picture of its own, so it gets the type glyph and its name
+   above the transport rather than a black rectangle pretending to be video. */
+.preview-audio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: min(520px, 100%);
+  color: var(--ink-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.preview-audio .preview-player {
+  background: none;
+}
+
+.preview-audio-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-pdf {
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  border: 0;
+  background: var(--paper);
+  border-radius: 6px;
+}
+
+.preview-text {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: var(--paper);
+  border-radius: 6px;
+  padding: 16px 18px;
+  text-align: left;
+}
+
+.preview-text pre {
+  margin: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+}
+
+.preview-cut {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.preview-loading {
+  color: var(--dim);
+  font-size: 12.5px;
+  padding: 40px;
 }
 
 .preview-bar {
