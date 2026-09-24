@@ -22,6 +22,8 @@ import type { ListRow, Row } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "../library/Thumbnail";
 import { MillerColumns } from "./MillerColumns";
+import { dragIds, itemDrag } from "../../lib/drag";
+import { useWorkbench } from "../../lib/workbench";
 
 type Layout = "grid" | "list" | "column";
 
@@ -50,6 +52,14 @@ export function ViewerPane({ scopeId, isActive }: Props) {
   const typeAheadRef = useRef<{ buffer: string; at: number }>({ buffer: "", at: 0 });
   const slot = useTaskbarSlot();
   const { setActive, setSelection: publishSelection } = useActiveItem();
+
+  const { setPaneScope } = useWorkbench();
+
+  // The taskbar offers "Add to this" and "New in this" for the collector the
+  // active pane is inside, and only this pane knows which that is.
+  useEffect(() => {
+    if (isActive) setPaneScope(scopeId ?? null);
+  }, [isActive, scopeId, setPaneScope]);
 
   const prefsScope = scopeId ?? "viewer:root";
 
@@ -299,6 +309,7 @@ export function ViewerPane({ scopeId, isActive }: Props) {
       ref={rowRef(row.id)}
       className={`row${Sel.isSelected(selection, row.id) ? " selected" : ""}`}
       onClick={(e) => onRowClick(e, row.id)}
+      {...itemDrag(() => dragIds(row.id, [...selection.ids]))}
       onDoubleClick={() =>
         row.node_type === "collector" ? setLayout("column") : announceOpen(row)
       }

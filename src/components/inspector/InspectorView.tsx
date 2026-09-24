@@ -10,17 +10,18 @@
 // remove. Everything below is rendering, never computing: the health score,
 // the facet grid and the rule names all arrive decided.
 //
-// Writing is limited to classification, and deliberately: applying and
-// removing tags has a named write path (checklist C2), and rename,
-// set-attribute and delete do not exist yet. A field that looks editable but
-// silently discards what you type is worse than one that plainly isn't
-// offered.
+// Writing is limited to what has a named write path: applying and removing
+// tags (C2), and putting things in and taking them out of the compass arms
+// (S4, S11). Rename and set-attribute do not exist yet. A field that looks
+// editable but silently discards what you type is worse than one that plainly
+// isn't offered.
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   acceptSuggestion,
+  addToArm,
   applyTag,
   createTag,
   dismissSuggestion,
@@ -28,8 +29,12 @@ import {
   nodeRecord,
   removeTag,
   revealInFileManager,
+  searchLibrary,
+  unlinkEdge,
 } from "../../lib/api";
 import { useActiveItem } from "../../lib/activeItem";
+import { droppedIds, isItemDrag, itemDrag } from "../../lib/drag";
+import { useWorkbench } from "../../lib/workbench";
 import { useArchivaChanged } from "../../lib/events";
 import {
   CAPABILITY_LABEL,
@@ -39,7 +44,7 @@ import {
   type Destination,
   type OpenOption,
 } from "../../lib/capabilities";
-import type { FacetSlot, ItemRecord, Link, Row, Slot, Tag } from "../../lib/types";
+import type { Added, FacetSlot, Hit, ItemRecord, Link, Row, Slot, Tag } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "../library/Thumbnail";
 import { PreviewStage } from "../preview/PreviewStage";
@@ -67,6 +72,15 @@ const AVAILABILITY_NOTE: Record<string, string> = {
   remote_uncached: "Not fetched yet — not broken, and not here.",
   permission_denied: "It is there, and this machine will not open it.",
 };
+
+/** A batch that refused some of what it was given is reported as an error
+ * line — the rest still went in, and the reason is what the backend said. */
+async function report(p: Promise<Added>): Promise<void> {
+  const added = await p;
+  if (added.refused.length > 0) {
+    throw new Error(added.refused.map(([, why]) => why).join("; "));
+  }
+}
 
 function formatBytes(bytes: number | null): string | null {
   if (!bytes) return null;
@@ -171,46 +185,207 @@ function OpenInMenu({
  * the empty arm is the prompt, and a cross missing an arm stops being a cross.
  * The list folds away because four arms of five entries each would push
  * everything below the compass off the pane. */
+/** What an arm's kind of edge is called, so an entry can say what removing
+ * it takes away — "untag", not "unlink", for a tag in North. */
+const EDGE_NOUN: Record<string, string> = {
+  tag_of: "tag",
+  contains: "membership",
+  wikilink: "wiki link",
+  embed: "embed",
+};
+
+/** The search behind an arm's "+": the library's own search (p_search), so
+ * what you can find to link is exactly what you can find anywhere else. */
+function ArmPicker({
+  item,
+  onPick,
+  onClose,
+}: {
+  item: string;
+  onPick: (ids: string[]) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<Hit[]>([]);
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    const query = q.trim();
+    if (!query) {
+      setHits([]);
+      return;
+    }
+    searchLibrary(query)
+      .then((h) => {
+        if (!live) return;
+        // Linking an item to itself is refused by the write path; offering
+        // it here would be offering the refusal.
+        setHits(h.filter((x) => x.node.id !== item).slice(0, 8));
+        setIdx(0);
+      })
+      .catch(() => live && setHits([]));
+    return () => {
+      live = false;
+    };
+  }, [q, item]);
+
+  return (
+    <div className="arm-picker">
+      <input
+        autoFocus
+        value={q}
+        placeholder="Find something to put here…"
+        onChange={(e) => setQ(e.target.value)}
+        onBlur={onClose}
+        onKeyDown={(e) => {
+          // The field owns its keys while it is open: Escape closes it rather
+          // than the pane, arrows move in the results rather than the list.
+          e.stopPropagation();
+          if (e.key === "Escape") onClose();
+          if (e.key === "ArrowDown") setIdx((i) => Math.min(i + 1, hits.length - 1));
+          if (e.key === "ArrowUp") setIdx((i) => Math.max(i - 1, 0));
+          if (e.key === "Enter" && hits[idx]) {
+            e.preventDefault();
+            onPick([hits[idx].node.id]);
+          }
+        }}
+      />
+      {hits.length > 0 && (
+        <ul className="arm-hits">
+          {hits.map((h, i) => (
+            <li
+              key={h.node.id}
+              className={i === idx ? "on" : ""}
+              onMouseDown={(e) => e.preventDefault()}
+              onMouseEnter={() => setIdx(i)}
+              onClick={() => onPick([h.node.id])}
+            >
+              <span className="icon">
+                <Thumbnail item={h.node} />
+              </span>
+              <span className="compass-name">{h.node.display_name}</span>
+              <span className="arm-hit-type">{h.node.node_type}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function CompassArm({
   slot,
+  dir,
   name,
   sense,
   area,
+  item,
+  busy,
   onContext,
+  onAdd,
+  onUnlink,
 }: {
   slot: Slot;
+  dir: string;
   name: string;
   sense: string;
   area: string;
+  item: string;
+  busy: boolean;
   onContext: (e: React.MouseEvent, node: Row) => void;
+  onAdd: (dir: string, ids: string[]) => void;
+  onUnlink: (link: Link) => void;
 }) {
+  const { tray } = useWorkbench();
   const [open, setOpen] = useState(true);
+  const [picking, setPicking] = useState(false);
+  const [over, setOver] = useState(false);
   // The groups are by node type; the cross wants the arm as one list, and the
   // per-group cap is still respected by counting what it left out.
   const links = slot.groups.flatMap((g) => g.links);
   const hidden = slot.groups.reduce((n, g) => n + (g.total - g.links.length), 0);
   const empty = slot.total === 0;
+  const fromTray = tray.filter((id) => id !== item);
 
   // `vacant`, not `empty`: `.empty` is already the pane-wide placeholder
   // ("nothing selected"), so borrowing its name gave every unfilled arm a
   // centring flex box with 64px of padding — a stretched, empty rectangle
   // where a one-line "none" belonged.
+  //
+  // The whole arm is a drop zone. Where something lands decides what it
+  // becomes (S6) — a tag dropped in North is a tagging — and that decision is
+  // the backend's; this only says which arm.
   return (
-    <div className={`compass-arm ${area}${empty ? " vacant" : ""}`}>
-      <button
-        className="compass-head"
-        disabled={empty}
-        aria-expanded={!empty && open}
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span className="compass-dir">{name}</span>
-        <span className="compass-sense">{sense}</span>
-        <span className="compass-count">
-          {empty ? "none" : `${slot.total} item${slot.total === 1 ? "" : "s"}`}
-        </span>
-        {!empty && <span className="group-caret">{open ? "▾" : "▸"}</span>}
-      </button>
+    <div
+      className={`compass-arm ${area}${empty ? " vacant" : ""}${over ? " over" : ""}`}
+      data-dir={dir}
+      onDragOver={(e) => {
+        if (!isItemDrag(e) || busy) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "link";
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        setOver(false);
+        const ids = droppedIds(e).filter((id) => id !== item);
+        if (ids.length === 0) return;
+        e.preventDefault();
+        onAdd(dir, ids);
+      }}
+    >
+      <div className="compass-headrow">
+        <button
+          className="compass-head"
+          disabled={empty}
+          aria-expanded={!empty && open}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <span className="compass-dir">{name}</span>
+          <span className="compass-sense">{sense}</span>
+          <span className="compass-count">
+            {empty ? "none" : `${slot.total} item${slot.total === 1 ? "" : "s"}`}
+          </span>
+          {!empty && <span className="group-caret">{open ? "▾" : "▸"}</span>}
+        </button>
+        <button
+          className="compass-add"
+          title={`Put something in ${name} — or drop it here`}
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setPicking((p) => !p)}
+        >
+          +
+        </button>
+      </div>
+      {picking && (
+        <>
+          <ArmPicker
+            item={item}
+            onClose={() => setPicking(false)}
+            onPick={(ids) => {
+              setPicking(false);
+              setOpen(true);
+              onAdd(dir, ids);
+            }}
+          />
+          {fromTray.length > 0 && (
+            <button
+              className="btn arm-from-tray"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setPicking(false);
+                setOpen(true);
+                onAdd(dir, fromTray);
+              }}
+            >
+              From the tray ({fromTray.length})
+            </button>
+          )}
+        </>
+      )}
       {!empty && open && (
         <ul className="compass-list">
           {links.map((l) => (
@@ -218,11 +393,21 @@ function CompassArm({
               key={l.edge_id}
               title={l.label ?? l.kind}
               onContextMenu={(e) => onContext(e, l.node)}
+              {...itemDrag(() => [l.node.id])}
             >
               <span className="icon">
                 <Thumbnail item={l.node} />
               </span>
               <span className="compass-name">{l.node.display_name}</span>
+              <button
+                className="compass-x"
+                title={`Remove this ${EDGE_NOUN[l.kind] ?? "link"} — ${l.node.display_name} itself is not touched`}
+                disabled={busy}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => onUnlink(l)}
+              >
+                ×
+              </button>
             </li>
           ))}
           {hidden > 0 && <li className="compass-more">+{hidden} more</li>}
@@ -238,11 +423,17 @@ function CompassArm({
 function CompassCross({
   slots,
   node,
+  busy,
   onOpen,
+  onAdd,
+  onUnlink,
 }: {
   slots: Slot[];
   node: Row;
+  busy: boolean;
   onOpen: (destination: Destination, node: Row) => void;
+  onAdd: (dir: string, ids: string[]) => void;
+  onUnlink: (link: Link) => void;
 }) {
   const [menu, setMenu] = useState<MenuAt | null>(null);
   const onContext = (e: React.MouseEvent, far: Row) => {
@@ -264,10 +455,15 @@ function CompassCross({
           <CompassArm
             key={c.key}
             slot={at(c.key)}
+            dir={c.key}
             name={c.name}
             sense={c.sense}
             area={`at-${c.key.toLowerCase()}`}
+            item={node.id}
+            busy={busy}
             onContext={onContext}
+            onAdd={onAdd}
+            onUnlink={onUnlink}
           />
         ))}
         <div className="compass-centre" onContextMenu={(e) => onContext(e, node)}>
@@ -281,7 +477,9 @@ function CompassCross({
       <p className="hint">
         North and South invert: what is broader than this has this as something
         narrower. West and East do not — related and opposing read the same from
-        either end (G23). Right-click an entry to open it elsewhere.
+        either end (G23). Add with an arm's +, or drop rows and tray items on it —
+        a tag put in North tags this, a collector put in North holds it. Right-click
+        an entry to open it elsewhere.
       </p>
     </section>
   );
@@ -696,7 +894,14 @@ export function InspectorView({ isActive, onOpen }: Props) {
             to answer: what is this next to. The record below it — ids, paths,
             fingerprints — is reference, and reference belongs under the thing
             it is reference for. */}
-        <CompassCross slots={slots} node={node} onOpen={openSomewhere} />
+        <CompassCross
+          slots={slots}
+          node={node}
+          busy={busy}
+          onOpen={openSomewhere}
+          onAdd={(dir, ids) => write(() => report(addToArm(node.id, dir, ids)))}
+          onUnlink={(l) => write(() => unlinkEdge(l.edge_id))}
+        />
 
         {/* ---------------------------------------------------- identity */}
 

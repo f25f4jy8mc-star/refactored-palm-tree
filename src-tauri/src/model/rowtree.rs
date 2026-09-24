@@ -692,6 +692,110 @@ mod tests {
         let viewer_root =
             serde_json::to_value(crate::model::tree::workspace(&c, None, &[]).unwrap()).unwrap();
 
+        // The workbench — the tray, the tag popup, making things, filling a
+        // compass arm — answered by `relate`, the module those surfaces call.
+        // Taken last because they write: every listing above is of the
+        // library before any of this happened, and each "after" below is the
+        // real state following the one gesture the walkthrough makes.
+        use crate::model::relate;
+        let (alpha, zulu, photo, deep) = (id_of("alpha"), id_of("zulu"), id_of("photo"), id_of("deep"));
+        let facets_json =
+            serde_json::to_value(crate::model::facets::FACETS.iter().collect::<Vec<_>>()).unwrap();
+        let tags_json = serde_json::to_value(crate::model::tags::list(&c).unwrap()).unwrap();
+        // Every selection the walkthrough can make in the popup: the pair it
+        // opens on and each of the two it can narrow to.
+        let mut selection_tags = serde_json::Map::new();
+        for set in [vec![alpha.clone(), zulu.clone()], vec![alpha.clone()], vec![zulu.clone()]] {
+            selection_tags.insert(
+                set.join("|"),
+                serde_json::to_value(relate::selection_tags(&c, &set).unwrap()).unwrap(),
+            );
+        }
+        let mut gather_targets = serde_json::Map::new();
+        {
+            let mut q = c.prepare("SELECT node_id FROM collector").unwrap();
+            let cids: Vec<String> = q
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap();
+            drop(q);
+            for cid in cids {
+                gather_targets
+                    .insert(cid.clone(), serde_json::to_value(relate::gather_target(&c, &cid).unwrap()).unwrap());
+            }
+        }
+
+        // Filling an arm, then emptying one: alpha's East gets zulu, and the
+        // West link to photo is taken away — each with the record the
+        // Inspector redraws from afterwards.
+        let arm_added = relate::add_to_arm(&c, &alpha, "E", &[zulu.clone()]).unwrap();
+        let after_add = serde_json::to_value(crate::model::record::record(&c, &alpha).unwrap()).unwrap();
+        // The same gesture a second time — by drag, in the walkthrough — is
+        // "already there", and the answer says so rather than adding twice.
+        let arm_again = relate::add_to_arm(&c, &alpha, "E", &[zulu.clone()]).unwrap();
+        // What an arm's + finds when you type a name: the library's own search.
+        let search_zulu = serde_json::to_value(
+            crate::model::search::search(&c, "zulu", &Default::default()).unwrap(),
+        )
+        .unwrap();
+        let west_edge: String = c
+            .query_row(
+                "SELECT id FROM edge WHERE source_id = ?1 AND target_id = ?2 AND kind = 'compass_w'",
+                params![alpha, photo],
+                |r| r.get(0),
+            )
+            .unwrap();
+        relate::unlink(&c, &west_edge).unwrap();
+        let after_unlink =
+            serde_json::to_value(crate::model::record::record(&c, &alpha).unwrap()).unwrap();
+
+        // The tag popup's one write: boats onto the pair, which alpha lacked.
+        let boats: String = c
+            .query_row("SELECT id FROM node WHERE node_type='tag' AND display_name='boats'", [], |r| r.get(0))
+            .unwrap();
+        crate::model::tags::apply(&c, &[alpha.clone(), zulu.clone()], &boats).unwrap();
+        let selection_after_tag = serde_json::to_value(
+            relate::selection_tags(&c, &[alpha.clone(), zulu.clone()]).unwrap(),
+        )
+        .unwrap();
+
+        // Gathering the tray into the board made here.
+        let gathered = relate::gather(&c, &[photo.clone(), deep.clone()], "made-here").unwrap();
+
+        // Making a note, as ⌘N does, in the fixture space's own folder — and
+        // its record, because what you just made is what the Inspector shows.
+        let created_note = relate::create(
+            &c,
+            &space_home.join("Archive"),
+            relate::NewKind::Note,
+            "Harbour ideas",
+            None,
+            None,
+        )
+        .unwrap();
+        records.insert(
+            created_note.id.clone(),
+            serde_json::to_value(crate::model::record::record(&c, &created_note.id).unwrap()).unwrap(),
+        );
+        note_bodies.insert(
+            created_note.id.clone(),
+            serde_json::to_value(crate::model::notetext::body(&c, &created_note.id).unwrap()).unwrap(),
+        );
+        let workbench = serde_json::json!({
+            "facets": facets_json,
+            "tags": tags_json,
+            "selectionTags": selection_tags,
+            "selectionAfterTag": selection_after_tag,
+            "boats": boats,
+            "gatherTargets": gather_targets,
+            "searchZulu": search_zulu,
+            "arm": { "item": alpha, "compass": "E", "others": [zulu], "added": arm_added, "again": arm_again,
+                     "afterAdd": after_add, "westEdge": west_edge, "afterUnlink": after_unlink },
+            "gathered": gathered,
+            "createdNote": created_note,
+        });
+
         let fixture = serde_json::json!({
             "rootName": root_name,
             "ids": ids,
@@ -702,6 +806,7 @@ mod tests {
             "settings": settings_json,
             "sources": sources_json,
             "sourcesStaged": sources_staged,
+            "workbench": workbench,
             "sourceByTypeOff": source_by_type_off,
             "sourceByTypeOffLinked": source_by_type_off_linked,
             "scoped": scoped,

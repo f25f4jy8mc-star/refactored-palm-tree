@@ -23,6 +23,7 @@ import { useArchivaChanged } from "../../lib/events";
 import * as Sel from "../../lib/selection";
 import type { Row, TreeColumn } from "../../lib/types";
 import { Thumbnail } from "../library/Thumbnail";
+import { itemDrag } from "../../lib/drag";
 
 type Props = {
   /** The collector the first column shows the inside of; null is the root. */
@@ -246,6 +247,7 @@ export function MillerColumns({ rootId, onAnnounce, workspace = false }: Props) 
                   className={`row${idOfColumn(i) === row.id ? " selected" : ""}`}
                   onClick={() => selectInColumn(i, row)}
                   onDoubleClick={() => activate(i, row)}
+                  {...itemDrag(() => [row.id])}
                 >
                   <span className="icon">
                     <Thumbnail item={row} />

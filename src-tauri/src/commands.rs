@@ -22,6 +22,7 @@ use crate::model::projections::{self, Detail, ListOptions, ListPage};
 use crate::model::record::{self, Record};
 use crate::model::folders;
 use crate::model::rowtree;
+use crate::model::relate::{self, Added, GatherTarget, SelectionTags};
 use crate::model::removal::{self, Preview, Removal};
 use crate::model::scan;
 use crate::model::search::{self, Hit};
@@ -820,6 +821,102 @@ pub fn recheck_availability(app: AppHandle, db: State<Db>) -> Result<Recheck, St
     };
     let _ = app.emit("archiva:changed", ());
     Ok(out)
+}
+
+/* ------------------------------------------------ relating and making */
+
+/// Run one write against the open space and emit one change event. Every
+/// command below is this and a call into `relate` — nothing is decided here.
+fn write<T>(
+    app: &AppHandle,
+    db: &State<Db>,
+    f: impl FnOnce(&Connection, PathBuf) -> anyhow::Result<T>,
+) -> Result<T, String> {
+    let out = {
+        let guard = db.open.lock().map_err(|e| e.to_string())?;
+        let open = guard.as_ref().ok_or(NO_SPACE)?;
+        f(&open.conn, open.space.path()).map_err(|e| format!("{e:#}"))?
+    };
+    let _ = app.emit("archiva:changed", ());
+    Ok(out)
+}
+
+/// Put each of `others` in one arm of `item`'s compass (S4). The arm decides
+/// what kind of edge that is (S6).
+#[tauri::command]
+pub fn add_to_arm(
+    app: AppHandle,
+    db: State<Db>,
+    item: String,
+    compass: String,
+    others: Vec<String>,
+) -> Result<Added, String> {
+    write(&app, &db, |c, _| relate::add_to_arm(c, &item, &compass, &others))
+}
+
+#[tauri::command]
+pub fn unlink_edge(app: AppHandle, db: State<Db>, edge_id: String) -> Result<(), String> {
+    write(&app, &db, |c, _| relate::unlink(c, &edge_id))
+}
+
+/// Whether this can be gathered into — `None` for anything that cannot,
+/// including a folder mirrored from disk.
+#[tauri::command]
+pub fn gather_target(db: State<Db>, id: String) -> Result<Option<GatherTarget>, String> {
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
+    relate::gather_target(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn gather(
+    app: AppHandle,
+    db: State<Db>,
+    ids: Vec<String>,
+    collector: String,
+) -> Result<Added, String> {
+    write(&app, &db, |c, _| relate::gather(c, &ids, &collector))
+}
+
+#[tauri::command]
+pub fn ungather(
+    app: AppHandle,
+    db: State<Db>,
+    ids: Vec<String>,
+    collector: String,
+) -> Result<usize, String> {
+    write(&app, &db, |c, _| relate::ungather(c, &ids, &collector))
+}
+
+#[tauri::command]
+pub fn rows_of(db: State<Db>, ids: Vec<String>) -> Result<Vec<projections::Row>, String> {
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
+    relate::rows_of(&conn, &ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn selection_tags(db: State<Db>, ids: Vec<String>) -> Result<SelectionTags, String> {
+    let guard = db.open.lock().map_err(|e| e.to_string())?;
+    let conn = opened(&guard)?;
+    relate::selection_tags(&conn, &ids).map_err(|e| e.to_string())
+}
+
+/// Make a note, a folder, a board or a link — optionally inside a collector
+/// you made. A note is written into the space's own `notes/` folder (S9).
+#[tauri::command]
+pub fn create_item(
+    app: AppHandle,
+    db: State<Db>,
+    kind: String,
+    name: String,
+    url: Option<String>,
+    into: Option<String>,
+) -> Result<projections::Row, String> {
+    let kind = relate::NewKind::parse(&kind).map_err(|e| e.to_string())?;
+    write(&app, &db, |c, root| {
+        relate::create(c, &root, kind, &name, url.as_deref(), into.as_deref())
+    })
 }
 
 /* ------------------------------------------------------------ removal */

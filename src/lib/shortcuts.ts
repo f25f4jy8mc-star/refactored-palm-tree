@@ -27,7 +27,9 @@ export type ShortcutId =
   | "clearSelection"
   | "stepNext"
   | "stepPrev"
-  | "deleteSelection";
+  | "deleteSelection"
+  | "create"
+  | "tag";
 
 export type Shortcut = {
   id: ShortcutId;
@@ -133,6 +135,21 @@ export const SHORTCUTS: Shortcut[] = [
     // which keyboard you are on.
     match: (e) => (e.key === "Backspace" || e.key === "Delete") && !mod(e) && !e.altKey,
   },
+  {
+    id: "create",
+    label: "Make something new",
+    keys: "⌘N",
+    match: (e) => mod(e) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n",
+  },
+  {
+    // New in this build — Build 17 opened its tagger from buttons only. ⌘T
+    // because tagging is the most repeated thing done to a selection, and a
+    // desktop webview has no tabs for it to collide with.
+    id: "tag",
+    label: "Tag the selection",
+    keys: "⌘T",
+    match: (e) => mod(e) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "t",
+  },
   // Build 17's fallback arrows: in a pane that owns no list of its own —
   // the Inspector, and later the note and graph views — ↑/↓ walk the order
   // the last list published, so the item under inspection can be stepped
@@ -163,10 +180,9 @@ export const LIST_OWNING_PANES = ["library", "scattered", "viewer"] as const;
  *
  *   ⌘Z      undo            — no mutation history exists yet, which is also
  *                             why deleting asks before it acts
- *   ⌘N      create          — no create-node mutation exists
  *   ⌘⌥−     minimise bar    — the taskbar has no collapsed state yet
  */
-export const DEFERRED = ["⌘Z", "⌘N", "⌘⌥−"] as const;
+export const DEFERRED = ["⌘Z", "⌘⌥−"] as const;
 
 /**
  * Resolve an event to at most one shortcut. First match wins; the matchers

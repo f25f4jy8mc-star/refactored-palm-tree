@@ -3,10 +3,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import type {
+  Added,
   Detail,
   DuplicatePair,
   Facet,
+  GatherTarget,
   Hit,
+  NewKind,
+  Row,
+  SelectionTags,
   ItemRecord,
   ListOptions,
   ListPage,
@@ -59,6 +64,49 @@ export function treeColumns(
 
 export function nodeDetail(id: string): Promise<Detail> {
   return invoke("node_detail", { id });
+}
+
+/* ------------------------------------------------ relating and making */
+
+/** Put each of `others` in one arm of `item`'s compass (S4). The arm decides
+ * the kind (S6): a tag in North is a tagging, a collector is membership. */
+export function addToArm(item: string, compass: string, others: string[]): Promise<Added> {
+  return invoke("add_to_arm", { item, compass, others });
+}
+
+export function unlinkEdge(edgeId: string): Promise<void> {
+  return invoke("unlink_edge", { edgeId });
+}
+
+/** Whether this can be gathered into — null for anything that cannot,
+ * including a folder mirrored from disk. */
+export function gatherTarget(id: string): Promise<GatherTarget | null> {
+  return invoke("gather_target", { id });
+}
+
+export function gather(ids: string[], collector: string): Promise<Added> {
+  return invoke("gather", { ids, collector });
+}
+
+export function ungather(ids: string[], collector: string): Promise<number> {
+  return invoke("ungather", { ids, collector });
+}
+
+/** Rows for ids a list published, in that order, skipping any now gone. */
+export function rowsOf(ids: string[]): Promise<Row[]> {
+  return invoke("rows_of", { ids });
+}
+
+export function selectionTags(ids: string[]): Promise<SelectionTags> {
+  return invoke("selection_tags", { ids });
+}
+
+export function createItem(
+  kind: NewKind,
+  name: string,
+  opts: { url?: string | null; into?: string | null } = {},
+): Promise<Row> {
+  return invoke("create_item", { kind, name, url: opts.url ?? null, into: opts.into ?? null });
 }
 
 /* -------------------------------------------------------------- spaces */

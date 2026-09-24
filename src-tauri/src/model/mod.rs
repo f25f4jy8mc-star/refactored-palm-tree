@@ -28,6 +28,7 @@ pub mod mutations;
 pub mod notetext;
 pub mod projections;
 pub mod reconcile;
+pub mod relate;
 pub mod record;
 pub mod removal;
 pub mod rowtree;

@@ -132,6 +132,33 @@ export interface Source {
   item_count: number;
 }
 
+/** What a batch of links came to (`relate::Added`). A refusal is reported
+ * beside the rest — `[id, reason]` — rather than failing the whole gesture. */
+export interface Added {
+  created: number;
+  existed: number;
+  refused: [string, string][];
+}
+
+/** A collector made in Archiva, which is the only kind that takes members —
+ * a folder mirrored from disk is not one (`relate::gather_target`). */
+export interface GatherTarget {
+  id: string;
+  name: string;
+  kind: "folder" | "board";
+}
+
+/** How many of a selection carry each tag and sit in each collector you
+ * made, keyed by id. The tag popup's "every" and "some" come from this. */
+export interface SelectionTags {
+  total: number;
+  tags: Record<string, number>;
+  collectors: Record<string, number>;
+  targets: GatherTarget[];
+}
+
+export type NewKind = "note" | "folder" | "board" | "link";
+
 /** A space's own preferences — decisions about the whole library, true
  * wherever you look at it (not `ViewPrefs`, which is per pane, per scope). */
 export interface Settings {

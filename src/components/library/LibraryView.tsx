@@ -10,6 +10,7 @@ import * as Sel from "../../lib/selection";
 import type { GroupBy, Hit, ListRow, Row, SortBy } from "../../lib/types";
 import { useTaskbarSlot } from "../../dock/TaskBar";
 import { Thumbnail } from "./Thumbnail";
+import { dragIds, itemDrag } from "../../lib/drag";
 
 const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "type", label: "Type" },
@@ -285,11 +286,17 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
     setActive(id, visibleIds);
   }
 
+  /** What is selected, in the order it is drawn — what a drag carries and
+   * what the Inspector tags. */
+  function selectedIds(): string[] {
+    return visibleIds.filter((id) => Sel.isSelected(selection, id));
+  }
+
   // Tagging applies to a selection, not to the focused row alone (C2). The
   // Inspector shows one item and writes to all of them, and this is the only
   // place that knows what "all of them" currently means.
   useEffect(() => {
-    publishSelection(visibleIds.filter((id) => Sel.isSelected(selection, id)));
+    publishSelection(selectedIds());
   }, [selection, visibleIds, publishSelection]);
 
   function onRowClick(e: React.MouseEvent, id: string) {
@@ -438,6 +445,7 @@ export function LibraryView({ mode, isActive, onOpenCollector }: Props) {
         className={`row${isSelected ? " selected" : ""}`}
         onClick={(e) => onRowClick(e, row.id)}
         onDoubleClick={() => openRow(row)}
+        {...itemDrag(() => dragIds(row.id, selectedIds()))}
       >
         <span className="icon">
           <Thumbnail item={row} />
