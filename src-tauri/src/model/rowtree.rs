@@ -762,6 +762,15 @@ mod tests {
 
         // Gathering the tray into the board made here.
         let gathered = relate::gather(&c, &[photo.clone(), deep.clone()], "made-here").unwrap();
+        let board_after_gather =
+            serde_json::to_value(crate::model::record::record(&c, "made-here").unwrap()).unwrap();
+
+        // South of a collector is inside it: clip dropped in the board's
+        // South becomes a member, and the board's record says so.
+        let clip = id_of("clip");
+        let south_added = relate::add_to_arm(&c, "made-here", "S", &[clip.clone()]).unwrap();
+        let board_after_south =
+            serde_json::to_value(crate::model::record::record(&c, "made-here").unwrap()).unwrap();
 
         // Making a note, as ⌘N does, in the fixture space's own folder — and
         // its record, because what you just made is what the Inspector shows.
@@ -793,6 +802,9 @@ mod tests {
             "arm": { "item": alpha, "compass": "E", "others": [zulu], "added": arm_added, "again": arm_again,
                      "afterAdd": after_add, "westEdge": west_edge, "afterUnlink": after_unlink },
             "gathered": gathered,
+            "boardAfterGather": board_after_gather,
+            "south": { "item": "made-here", "others": [clip], "added": south_added,
+                       "after": board_after_south },
             "createdNote": created_note,
         });
 

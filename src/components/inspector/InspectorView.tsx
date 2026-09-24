@@ -25,6 +25,7 @@ import {
   applyTag,
   createTag,
   dismissSuggestion,
+  gatherTarget,
   listTags,
   nodeRecord,
   removeTag,
@@ -282,6 +283,7 @@ function CompassArm({
   area,
   item,
   busy,
+  fixed,
   onContext,
   onAdd,
   onUnlink,
@@ -293,6 +295,8 @@ function CompassArm({
   area: string;
   item: string;
   busy: boolean;
+  /** Edges that are where a file is on disk, which only moving it changes. */
+  fixed: Set<string>;
   onContext: (e: React.MouseEvent, node: Row) => void;
   onAdd: (dir: string, ids: string[]) => void;
   onUnlink: (link: Link) => void;
@@ -352,7 +356,11 @@ function CompassArm({
         </button>
         <button
           className="compass-add"
-          title={`Put something in ${name} — or drop it here`}
+          title={
+            sense === "inside"
+              ? "Put something inside this — or drop it here"
+              : `Put something in ${name} — or drop it here`
+          }
           disabled={busy}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => setPicking((p) => !p)}
@@ -401,8 +409,12 @@ function CompassArm({
               <span className="compass-name">{l.node.display_name}</span>
               <button
                 className="compass-x"
-                title={`Remove this ${EDGE_NOUN[l.kind] ?? "link"} — ${l.node.display_name} itself is not touched`}
-                disabled={busy}
+                title={
+                  fixed.has(l.edge_id)
+                    ? "This is where the file is on disk — move the file to change it"
+                    : `Remove this ${EDGE_NOUN[l.kind] ?? "link"} — ${l.node.display_name} itself is not touched`
+                }
+                disabled={busy || fixed.has(l.edge_id)}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onUnlink(l)}
               >
@@ -424,6 +436,7 @@ function CompassCross({
   slots,
   node,
   busy,
+  fixed,
   onOpen,
   onAdd,
   onUnlink,
@@ -431,6 +444,7 @@ function CompassCross({
   slots: Slot[];
   node: Row;
   busy: boolean;
+  fixed: Set<string>;
   onOpen: (destination: Destination, node: Row) => void;
   onAdd: (dir: string, ids: string[]) => void;
   onUnlink: (link: Link) => void;
@@ -457,10 +471,13 @@ function CompassCross({
             slot={at(c.key)}
             dir={c.key}
             name={c.name}
-            sense={c.sense}
+            // A collector's South is what it holds: adding there puts things
+            // inside it (`relate::add_to_arm`), so the arm says so.
+            sense={c.key === "S" && node.node_type === "collector" ? "inside" : c.sense}
             area={`at-${c.key.toLowerCase()}`}
             item={node.id}
             busy={busy}
+            fixed={fixed}
             onContext={onContext}
             onAdd={onAdd}
             onUnlink={onUnlink}
@@ -478,8 +495,9 @@ function CompassCross({
         North and South invert: what is broader than this has this as something
         narrower. West and East do not — related and opposing read the same from
         either end (G23). Add with an arm's +, or drop rows and tray items on it —
-        a tag put in North tags this, a collector put in North holds it. Right-click
-        an entry to open it elsewhere.
+        a tag put in North tags this, a collector put in North holds it, and what
+        you put in a collector's South goes inside it. Right-click an entry to open
+        it elsewhere.
       </p>
     </section>
   );
@@ -623,6 +641,9 @@ export function InspectorView({ isActive, onOpen }: Props) {
   const { id, selection, revealItem } = useActiveItem();
   const [rec, setRec] = useState<ItemRecord | null>(null);
   const [known, setKnown] = useState<Tag[]>([]);
+  // Memberships of folders mirrored from disk. Asked of the backend, which is
+  // the one place that decides what can be gathered into (rule 1).
+  const [fixed, setFixed] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // The head's preview, open to the width of the pane. On by default: the
@@ -646,6 +667,16 @@ export function InspectorView({ isActive, onOpen }: Props) {
     }
     try {
       const [r, tags] = await Promise.all([nodeRecord(id), listTags()]);
+      // A `contains` edge's collector is the far node in North and this node
+      // in South. Each is asked once.
+      const memberships = r.slots
+        .flatMap((s) => s.groups.flatMap((g) => g.links))
+        .filter((l) => l.kind === "contains")
+        .map((l) => ({ edge: l.edge_id, collector: l.compass === "N" ? l.node.id : r.node.id }));
+      const collectors = [...new Set(memberships.map((m) => m.collector))];
+      const targets = await Promise.all(collectors.map((c) => gatherTarget(c)));
+      const mirrored = new Set(collectors.filter((_, i) => targets[i] === null));
+      setFixed(new Set(memberships.filter((m) => mirrored.has(m.collector)).map((m) => m.edge)));
       setRec(r);
       setKnown(tags);
       setError(null);
@@ -898,6 +929,7 @@ export function InspectorView({ isActive, onOpen }: Props) {
           slots={slots}
           node={node}
           busy={busy}
+          fixed={fixed}
           onOpen={openSomewhere}
           onAdd={(dir, ids) => write(() => report(addToArm(node.id, dir, ids)))}
           onUnlink={(l) => write(() => unlinkEdge(l.edge_id))}

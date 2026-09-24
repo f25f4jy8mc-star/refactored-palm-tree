@@ -21,6 +21,7 @@ import { treeColumns } from "../../lib/api";
 import { useActiveItem } from "../../lib/activeItem";
 import { useArchivaChanged } from "../../lib/events";
 import * as Sel from "../../lib/selection";
+import * as Cascade from "../../lib/miller";
 import type { Row, TreeColumn } from "../../lib/types";
 import { Thumbnail } from "../library/Thumbnail";
 import { itemDrag } from "../../lib/drag";
@@ -107,10 +108,11 @@ export function MillerColumns({ rootId, onAnnounce, workspace = false }: Props) 
     return m;
   }, [columns, activeCol]);
 
+  // Read from the path, not from the columns on screen: the columns lag the
+  // path by one fetch, and a highlight computed from the lagging one is how a
+  // key pressed mid-fetch landed somewhere else. See lib/miller.
   function idOfColumn(colIndex: number): string | null {
-    if (colIndex < path.length) return path[colIndex];
-    if (colIndex === lastColIndex) return lastCursor;
-    return null;
+    return Cascade.highlighted({ path, cursor: lastCursor }, colIndex);
   }
 
   const publish = useCallback((id: string | null) => setActive(id, order), [setActive, order]);
@@ -118,15 +120,18 @@ export function MillerColumns({ rootId, onAnnounce, workspace = false }: Props) 
   function selectInColumn(colIndex: number, row: Row) {
     setActiveCol(colIndex);
     publish(row.id);
-    if (colIndex === lastColIndex) setLastCursor(row.id);
     // Selecting and opening are the same gesture in column view: a folder
     // shows its contents in the next column the moment it's highlighted, and
-    // anything that can't be expanded closes the columns to its right.
-    if (row.capabilities.includes("expand")) {
-      setPath((p) => (p[colIndex] === row.id ? p : [...p.slice(0, colIndex), row.id]));
-    } else {
-      setPath((p) => (p.length > colIndex ? p.slice(0, colIndex) : p));
-    }
+    // anything that can't be expanded closes the columns to its right — and
+    // becomes the highlight of the column it is in, which is now the last.
+    const next = Cascade.select(
+      { path, cursor: lastCursor },
+      colIndex,
+      row.id,
+      row.capabilities.includes("expand"),
+    );
+    setPath(next.path);
+    setLastCursor(next.cursor);
   }
 
   function expand(colIndex: number, row: Row) {
@@ -151,9 +156,7 @@ export function MillerColumns({ rootId, onAnnounce, workspace = false }: Props) 
       case "ArrowUp":
       case "ArrowDown": {
         e.preventDefault();
-        const seed = currentId ? Sel.click(currentId) : Sel.EMPTY_SELECTION;
-        const next = Sel.moveCursor(seed, colOrder, e.key === "ArrowDown" ? 1 : -1, false);
-        const landed = rowIn(next.cursor);
+        const landed = rowIn(Cascade.step(colOrder, currentId, e.key === "ArrowDown" ? 1 : -1));
         if (landed) {
           selectInColumn(activeCol, landed);
           rowRefs.current.get(landed.id)?.scrollIntoView({ block: "nearest" });

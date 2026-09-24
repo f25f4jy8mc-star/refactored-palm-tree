@@ -9,6 +9,17 @@
   --dim: #949494;
   --hit: 30px;
   --rail-w: 48px;
+
+  /* The layers, bottom to top, named once. The dock is sealed into its own
+     stacking context at the bottom, so dockview's internal z-indexes (sashes
+     at 99, drop overlays up to 9999) are ordered among themselves and cannot
+     paint over the taskbar or a dialog. */
+  --z-dock: 0;
+  --z-taskbar: 40;
+  --z-flyout: 50;
+  --z-dialog: 60;
+  --z-menu: 70;
+  --z-preview: 100;
 }
 
 * {
@@ -106,6 +117,8 @@ body {
 .dock-area {
   flex: 1;
   min-height: 0;
+  position: relative;
+  z-index: var(--z-dock);
 }
 
 .dock-root {
@@ -504,6 +517,7 @@ body {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
   display: flex;
   flex-direction: column;
+  z-index: var(--z-taskbar);
 }
 
 /* Each tier scrolls on its own and the bar does not, so a popover opened from
@@ -1146,7 +1160,7 @@ body {
 .preview-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-preview);
   background: rgba(17, 17, 17, 0.72);
   backdrop-filter: blur(3px);
   display: flex;
@@ -1353,7 +1367,7 @@ body {
   position: absolute;
   left: calc(var(--rail-w) + 8px);
   bottom: 12px;
-  z-index: 60;
+  z-index: var(--z-flyout);
   width: 380px;
   max-width: calc(100vw - var(--rail-w) - 24px);
   background: var(--paper);
@@ -1840,7 +1854,7 @@ body {
    would otherwise carry it away from where it was opened. */
 .ctx-menu {
   position: fixed;
-  z-index: 50;
+  z-index: var(--z-menu);
   min-width: 190px;
   padding: 4px;
   background: var(--paper);
@@ -2158,7 +2172,7 @@ body {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2607,8 +2621,10 @@ button.group-head:hover {
 
 .tp-all {
   margin-left: auto;
-  height: 20px;
-  padding: 0 6px;
+  height: 22px;
+  padding: 0 8px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .tp-facet {
@@ -2705,19 +2721,47 @@ button.chip.on:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 4px;
+  padding: 4px 6px;
   border-radius: 4px;
   font-size: 12px;
-  color: var(--dim);
+  color: var(--ink-2);
   cursor: pointer;
-}
-
-.tp-list li.on {
-  color: var(--ink);
+  border: 1px solid transparent;
 }
 
 .tp-list li:hover {
   background: var(--wash);
+}
+
+/* Being tagged: drawn the way a selected row is drawn everywhere else, so
+   "which of these am I tagging" needs no reading. */
+.tp-list li.on,
+.tp-list li.on:hover {
+  background: var(--ink);
+  color: #fff;
+}
+
+/* The keyboard cursor, separate from being tagged — ⇧↓ and Space act from
+   here. Only drawn while the list has focus, where the keys go. */
+.tp-list:focus-visible li.cursor,
+.tp-list:focus li.cursor {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px #fff;
+}
+
+.tp-list:focus {
+  outline: none;
+}
+
+.tp-check {
+  flex: 0 0 12px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.tp-keys {
+  margin-top: 8px;
+  font-size: 10.5px !important;
 }
 
 .tp-list .icon {
@@ -2848,7 +2892,7 @@ button.chip.on:hover:not(:disabled) {
 .link-menu-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: var(--z-menu);
 }
 
 .link-menu {

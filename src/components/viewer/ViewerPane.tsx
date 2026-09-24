@@ -182,6 +182,11 @@ export function ViewerPane({ scopeId, isActive }: Props) {
       setSelection(Sel.clear());
       return;
     }
+    // In column view the cascade owns every other key. Its handler runs first
+    // and the event then bubbles here — handling it again moved this pane's
+    // hidden flat selection and published *that* as the active item, which
+    // was the highlight jumping after ← out of a folder.
+    if (layout === "column") return;
 
     return onFlatKey(e);
   }

@@ -38,7 +38,9 @@ function Shell() {
   const [notice, setNotice] = useState<string | null>(null);
   const bench = useWorkbench();
   const [scope, setScope] = useState<GatherTarget | null>(null);
-  const [inspecting, setInspecting] = useState<{ id: string; name: string } | null>(null);
+  const [inspecting, setInspecting] = useState<
+    { id: string; name: string; collector: boolean } | null
+  >(null);
   // Which library this window is looking at. Null is a first run, or a space
   // whose drive is not plugged in — neither is an error, and both are the
   // same screen. Everything below needs a space to read from, so nothing
@@ -87,7 +89,12 @@ function Shell() {
       rowsOf([activeId])
         .then(
           (r) =>
-            current() && setInspecting(r[0] ? { id: r[0].id, name: r[0].display_name } : null),
+            current() &&
+            setInspecting(
+              r[0]
+                ? { id: r[0].id, name: r[0].display_name, collector: r[0].node_type === "collector" }
+                : null,
+            ),
         )
         .catch(() => current() && setInspecting(null));
     } else {
@@ -363,7 +370,12 @@ function Shell() {
         />
       )}
       {linkMenu && (
-        <LinkMenu at={linkMenu} onPick={linkTrayTo} onClose={() => setLinkMenu(null)} />
+        <LinkMenu
+          at={linkMenu}
+          intoCollector={!!inspecting?.collector}
+          onPick={linkTrayTo}
+          onClose={() => setLinkMenu(null)}
+        />
       )}
       {deleting && (
         <DeleteDialog
@@ -385,10 +397,13 @@ function Shell() {
  * choice reads the same here as in the Inspector it is about. */
 function LinkMenu({
   at,
+  intoCollector,
   onPick,
   onClose,
 }: {
   at: { x: number; y: number };
+  /** A collector's South is what it holds — see `relate::add_to_arm`. */
+  intoCollector: boolean;
   onPick: (dir: string) => void;
   onClose: () => void;
 }) {
@@ -406,7 +421,7 @@ function LinkMenu({
     { key: "N", name: "North", sense: "broader" },
     { key: "W", name: "West", sense: "related" },
     { key: "E", name: "East", sense: "opposing" },
-    { key: "S", name: "South", sense: "narrower" },
+    { key: "S", name: "South", sense: intoCollector ? "inside" : "narrower" },
   ];
   return (
     <div className="link-menu-backdrop" onClick={onClose}>

@@ -3,8 +3,13 @@
 // Left to right: what you are tagging, the three tiers with their facets,
 // unclassified, then the collectors you made. The layout is Build 17's and so
 // is the rule that makes it worth having: a batch is narrowed *inside* the
-// popup, without closing it — click one subject to tag only that, ⌘-click to
-// add or take one away, "all" to widen back.
+// popup, without closing it.
+//
+// The subject list is a list like every other in the app, run by the same
+// `lib/selection` rules rather than a private copy: click isolates, ⌘-click
+// toggles, ⇧-click ranges; ↑/↓ move (⇧ extends), Space toggles the row under
+// the cursor, ⌘A and "Select all" widen back to everything. It has focus when
+// the popup opens, so the arrows work before anything is clicked.
 //
 // Every chip reads from `selection_tags`, which counts over the edges once:
 // **black** is on every item being tagged, **grey** is on some — and clicking
@@ -17,7 +22,7 @@
 // only the ones made in Archiva are offered, since a folder mirrored from disk
 // holds what the disk says it holds (`relate::gather_target`).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   acceptSuggestion,
@@ -34,6 +39,7 @@ import {
   ungather,
 } from "../../lib/api";
 import { useArchivaChanged } from "../../lib/events";
+import * as Sel from "../../lib/selection";
 import type { Facet, Row, SelectionTags, Tag, TagSuggestion } from "../../lib/types";
 import { Thumbnail } from "../library/Thumbnail";
 
@@ -43,8 +49,15 @@ const chip = (s: State) => "chip" + (s === "all" ? " on" : s === "some" ? " part
 
 export function TagPopup({ ids, onClose }: { ids: string[]; onClose: () => void }) {
   const [subjects, setSubjects] = useState<Row[]>([]);
-  // Which of the selection this popup is tagging. Starts as all of it.
-  const [active, setActive] = useState<string[]>(ids);
+  // Which of the selection this popup is tagging. Starts as all of it, with
+  // the keyboard cursor on the first.
+  const [sel, setSel] = useState<Sel.SelectionState>(() => ({
+    ids: new Set(ids),
+    anchor: ids[0] ?? null,
+    cursor: ids[0] ?? null,
+  }));
+  const listRef = useRef<HTMLUListElement>(null);
+  const rowRefs = useRef<Map<string, HTMLElement>>(new Map());
   const [facets, setFacets] = useState<Facet[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [counts, setCounts] = useState<SelectionTags | null>(null);
@@ -53,7 +66,44 @@ export function TagPopup({ ids, onClose }: { ids: string[]; onClose: () => void 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const targets = useMemo(() => (active.length > 0 ? active : ids), [active, ids]);
+  // In the order the list draws them, which is the order they were selected
+  // in. Never empty: a selection narrowed to nothing would tag nothing.
+  const targets = useMemo(() => {
+    const t = ids.filter((id) => sel.ids.has(id));
+    return t.length > 0 ? t : ids;
+  }, [ids, sel]);
+  const allOn = targets.length === ids.length;
+
+  useEffect(() => {
+    listRef.current?.focus();
+  }, []);
+
+  /** Apply a selection change, refusing one that would leave nothing. */
+  const choose = (next: Sel.SelectionState) => {
+    setSel(next.ids.size > 0 ? next : { ...next, ids: new Set(ids) });
+    if (next.cursor) rowRefs.current.get(next.cursor)?.scrollIntoView({ block: "nearest" });
+  };
+
+  const onListKey = (e: React.KeyboardEvent) => {
+    const order = subjects.map((s) => s.id);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      choose(Sel.moveCursor(sel, order, e.key === "ArrowDown" ? 1 : -1, e.shiftKey));
+      return;
+    }
+    if (e.key === " " && sel.cursor) {
+      e.preventDefault();
+      e.stopPropagation();
+      choose(Sel.toggleClick(sel, sel.cursor));
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      e.stopPropagation();
+      choose({ ...Sel.selectAll(order), cursor: sel.cursor });
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -229,11 +279,13 @@ export function TagPopup({ ids, onClose }: { ids: string[]; onClose: () => void 
               Selection
               {ids.length > 1 && (
                 <button
-                  className="btn quiet tp-all"
-                  disabled={active.length === ids.length}
-                  onClick={() => setActive(ids)}
+                  className="btn tp-all"
+                  disabled={allOn}
+                  title="Tag every item in the selection (⌘A)"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => choose({ ...Sel.selectAll(ids), cursor: sel.cursor })}
                 >
-                  all
+                  Select all
                 </button>
               )}
             </div>
@@ -244,32 +296,51 @@ export function TagPopup({ ids, onClose }: { ids: string[]; onClose: () => void 
                 </span>
               ))}
             </div>
-            <ul className="tp-list">
-              {subjects.map((s) => (
-                <li
-                  key={s.id}
-                  className={targets.includes(s.id) ? "on" : ""}
-                  onClick={(e) =>
-                    // The same rules as every list: ⌘ toggles, a plain click
-                    // isolates. Emptying it falls back to all of them.
-                    setActive((prev) => {
-                      if (e.metaKey || e.ctrlKey) {
-                        const next = prev.includes(s.id)
-                          ? prev.filter((x) => x !== s.id)
-                          : [...prev, s.id];
-                        return next.length ? next : ids;
-                      }
-                      return [s.id];
-                    })
-                  }
-                >
-                  <span className="icon">
-                    <Thumbnail item={s} />
-                  </span>
-                  <span className="tp-list-name">{s.display_name}</span>
-                </li>
-              ))}
+            <ul
+              ref={listRef}
+              className="tp-list"
+              tabIndex={0}
+              role="listbox"
+              aria-multiselectable
+              aria-label="What is being tagged"
+              onKeyDown={onListKey}
+            >
+              {subjects.map((s) => {
+                const on = targets.includes(s.id);
+                return (
+                  <li
+                    key={s.id}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(s.id, el);
+                      else rowRefs.current.delete(s.id);
+                    }}
+                    role="option"
+                    aria-selected={on}
+                    className={(on ? "on" : "") + (sel.cursor === s.id ? " cursor" : "")}
+                    onMouseDown={(e) => {
+                      // Keep focus on the list, so the arrows carry on from here.
+                      e.preventDefault();
+                      listRef.current?.focus();
+                    }}
+                    onClick={(e) => {
+                      const order = subjects.map((x) => x.id);
+                      if (e.shiftKey) choose(Sel.rangeClick(sel, s.id, order));
+                      else if (e.metaKey || e.ctrlKey) choose(Sel.toggleClick(sel, s.id));
+                      else choose(Sel.click(s.id));
+                    }}
+                  >
+                    <span className="tp-check" aria-hidden>
+                      {on ? "✓" : ""}
+                    </span>
+                    <span className="icon">
+                      <Thumbnail item={s} />
+                    </span>
+                    <span className="tp-list-name">{s.display_name}</span>
+                  </li>
+                );
+              })}
             </ul>
+            <div className="tp-keys hint">↑↓ move · ⇧ extends · Space toggles · ⌘A all</div>
           </div>
 
           {/* 2, 3, 4 — the tiers */}

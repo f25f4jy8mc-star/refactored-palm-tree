@@ -56,11 +56,40 @@ pub struct Added {
 /// `link(item, compass, other)`: the edge is written from the item being
 /// looked at, which is what "put this in its North" means, and the far end
 /// reads it inverted or not by the rule in `projections::reciprocal` (S5).
+///
+/// **South of a collector is inside it.** North and South are converse (S5):
+/// putting Y in X's South is the same claim as putting X in Y's North, and a
+/// collector in an item's North is membership. So the claim is written from
+/// Y's side — `link(Y, "N", X)` — and `mutations` makes it `contains`, which
+/// reads back from the collector as South. Written from X's side it would be
+/// a bare `compass_s`, a second kind of "narrower than this folder" that the
+/// Viewer, the tray and the tag popup would never see as membership.
+///
+/// A folder mirrored from disk is refused here for the same reason `gather`
+/// refuses it: what it holds is what the disk says it holds.
 pub fn add_to_arm(conn: &Connection, item: &str, compass: &str, others: &[String]) -> Result<Added> {
+    let into_collector = compass == "S" && is_collector(conn, item)?;
+    let gatherable = into_collector && gather_target(conn, item)?.is_some();
     let tx = conn.unchecked_transaction()?;
     let mut out = Added::default();
     for other in others {
-        match mutations::link(&tx, item, compass, other, None, None) {
+        if into_collector && !gatherable {
+            out.refused.push((
+                other.clone(),
+                "a linked folder holds what is on disk — only a collector made in Archiva takes things".into(),
+            ));
+            continue;
+        }
+        if into_collector && other == item {
+            out.refused.push((other.clone(), "an item cannot be linked to itself".into()));
+            continue;
+        }
+        let written = if into_collector {
+            mutations::link(&tx, other, "N", item, None, None)
+        } else {
+            mutations::link(&tx, item, compass, other, None, None)
+        };
+        match written {
             Ok(l) if l.existed => out.existed += 1,
             Ok(_) => out.created += 1,
             // The refusals `link` makes are about this one pair — itself, a
@@ -78,16 +107,38 @@ pub fn add_to_arm(conn: &Connection, item: &str, compass: &str, others: &[String
     Ok(out)
 }
 
+fn is_collector(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row("SELECT 1 FROM collector WHERE node_id = ?1", params![id], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
 /// Remove one edge, whichever end it was written from, and recompute both.
+///
+/// Membership of a folder mirrored from disk is not removable here: it is
+/// where the file is, the next Refresh would put it straight back, and
+/// taking it out in the meantime would be the library briefly disagreeing
+/// with the disk. The same rule as `ungather`.
 pub fn unlink(conn: &Connection, edge_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    let ends: (String, Option<String>) = tx
+    let (source, target, kind): (String, Option<String>, String) = tx
         .query_row(
-            "SELECT source_id, target_id FROM edge WHERE id = ?1",
+            "SELECT source_id, target_id, kind FROM edge WHERE id = ?1",
             params![edge_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| anyhow!("no such link: {edge_id}"))?;
+    if kind == "contains" {
+        if let Some(t) = &target {
+            if gather_target(&tx, t)?.is_none() {
+                return Err(anyhow!(
+                    "this is where the file is on disk — move the file to change it"
+                ));
+            }
+        }
+    }
+    let ends = (source, target);
     mutations::unlink(&tx, edge_id)?;
     let mut touched = vec![ends.0];
     touched.extend(ends.1);
@@ -500,6 +551,70 @@ mod tests {
         ];
         want.sort();
         assert_eq!(got, want);
+    }
+
+    fn south_of(c: &Connection, id: &str) -> Vec<String> {
+        let rec = crate::model::record::record(c, id).unwrap();
+        let v = serde_json::to_value(&rec).unwrap();
+        v["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["compass"] == "S")
+            .flat_map(|s| s["groups"].as_array().unwrap().clone())
+            .flat_map(|g| g["links"].as_array().unwrap().clone())
+            .map(|l| l["node"]["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn south_of_a_collector_is_inside_it() {
+        // What you put in a folder's South is in the folder — the same edge
+        // the tray's "Add to" writes, so every surface sees it as membership.
+        let c = db();
+        media(&c, "a");
+        let folder = create(&c, Path::new("/unused"), NewKind::Folder, "Picks", None, None).unwrap();
+        let out = add_to_arm(&c, &folder.id, "S", &ids(&["a"])).unwrap();
+        assert_eq!(out.created, 1);
+        assert_eq!(kinds_from(&c, "a"), vec![(folder.id.clone(), "contains".to_string())]);
+        assert!(kinds_from(&c, &folder.id).is_empty(), "no compass_s written from the folder");
+        assert_eq!(south_of(&c, &folder.id), vec!["a".to_string()]);
+        // And the tray's way in is the same claim, not a second one.
+        assert_eq!(gather(&c, &ids(&["a"]), &folder.id).unwrap().existed, 1);
+    }
+
+    #[test]
+    fn south_of_a_folder_mirrored_from_disk_is_refused() {
+        let c = db();
+        media(&c, "a");
+        mirrored(&c, "disk");
+        let out = add_to_arm(&c, "disk", "S", &ids(&["a"])).unwrap();
+        assert_eq!(out.created, 0);
+        assert_eq!(out.refused.len(), 1);
+        assert!(kinds_from(&c, "a").is_empty());
+    }
+
+    #[test]
+    fn south_of_an_item_is_still_a_compass_link() {
+        let c = db();
+        media(&c, "a");
+        media(&c, "b");
+        add_to_arm(&c, "a", "S", &ids(&["b"])).unwrap();
+        assert_eq!(kinds_from(&c, "a"), vec![("b".to_string(), "compass_s".to_string())]);
+    }
+
+    #[test]
+    fn where_a_file_is_on_disk_cannot_be_unlinked() {
+        let c = db();
+        media(&c, "a");
+        mirrored(&c, "disk");
+        c.execute(
+            "INSERT INTO edge(id,source_id,target_id,kind) VALUES ('m','a','disk','contains')",
+            [],
+        )
+        .unwrap();
+        assert!(unlink(&c, "m").is_err());
+        assert_eq!(kinds_from(&c, "a").len(), 1, "still there");
     }
 
     #[test]
